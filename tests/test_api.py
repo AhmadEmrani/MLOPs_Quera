@@ -5,6 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from promiseops import api
+from promiseops.api import services
+from promiseops.api import state as api_state
 from promiseops.data import FEATURE_COLUMNS, ConflictError
 from promiseops.settings import Settings
 
@@ -73,9 +75,9 @@ def env(monkeypatch):
         store[request_id] = {"order_id": order_id, "request_id": request_id, **result}
         return store[request_id]
 
-    monkeypatch.setattr(api, "init_db", fake_init)
-    monkeypatch.setattr(api, "build_features", fake_features)
-    monkeypatch.setattr(api, "get_or_save_prediction", fake_save)
+    monkeypatch.setattr(api_state, "init_db", fake_init)
+    monkeypatch.setattr(services, "build_features", fake_features)
+    monkeypatch.setattr(services, "get_or_save_prediction", fake_save)
     return calls
 
 
@@ -161,7 +163,13 @@ def test_unknown_order_is_404(env):
 
 @pytest.mark.parametrize(
     "body",
-    [{}, {"order_id": ""}, {"order_id": "bad id!"}, {"order_id": "o", "extra": 1}, {"order_id": "o", "request_id": "x y"}],
+    [
+        {},
+        {"order_id": ""},
+        {"order_id": "bad id!"},
+        {"order_id": "o", "extra": 1},
+        {"order_id": "o", "request_id": "x y"},
+    ],
 )
 def test_invalid_input_is_422_generic(env, body):
     with make_client() as client:
@@ -188,7 +196,7 @@ def test_internal_error_hides_details(env, monkeypatch):
     def boom(*_a, **_k):
         raise RuntimeError("SELECT * FROM orders; traceback")
 
-    monkeypatch.setattr(api, "get_or_save_prediction", boom)
+    monkeypatch.setattr(services, "get_or_save_prediction", boom)
     with make_client() as client:
         response = client.post("/predict", json={"order_id": "order-1"}, headers=AUTH)
     assert response.status_code == 500
@@ -227,3 +235,13 @@ def test_release_path_parent_is_passed_to_loader(env):
     with make_client(loader=loader):
         pass
     assert str(seen[0]) == "/opt/promiseops/release"
+
+
+def test_versioned_predict_matches_contract_path(env):
+    body = {"order_id": "order-1", "request_id": "req-v1"}
+    with make_client() as client:
+        legacy = client.post("/predict", json=body, headers=AUTH)
+        versioned = client.post("/v1/predict", json=body, headers=AUTH)
+        assert client.post("/v1/predict", json=body).status_code == 401
+    assert legacy.status_code == versioned.status_code == 200
+    assert legacy.json() == versioned.json()
