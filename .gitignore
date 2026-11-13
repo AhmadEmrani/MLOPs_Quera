@@ -6,6 +6,11 @@ __pycache__/
 *.kubeconfig
 data/
 artifacts/
+.local-artifacts/
+.local-incumbent/
+.local-mlflow.db*
+.mlruns/
+requirements-tracking.in
 wheelhouse/
 tracking-wheelhouse/
 .pytest_cache/

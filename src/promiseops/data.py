@@ -385,7 +385,9 @@ def build_features(connection, order_ids=None, *, as_of, labeled=False) -> pd.Da
     if order_ids is not None:
         order_ids_list = list(order_ids)
         if not order_ids_list:
-            cols = ["order_id", *FEATURE_COLUMNS] + (["late"] if labeled else [])
+            cols = ["order_id", *FEATURE_COLUMNS]
+            if labeled:
+                cols.extend(["approved_at", "label_available_at", "late"])
             return pd.DataFrame(columns=cols)
     else:
         order_ids_list = None
@@ -488,14 +490,18 @@ def build_features(connection, order_ids=None, *, as_of, labeled=False) -> pd.Da
 
     df = pd.DataFrame(rows, columns=colnames)
     if df.empty:
-        cols = ["order_id", *FEATURE_COLUMNS] + (["late"] if labeled else [])
+        cols = ["order_id", *FEATURE_COLUMNS]
+        if labeled:
+            cols.extend(["approved_at", "label_available_at", "late"])
         return pd.DataFrame(columns=cols)
 
     # اگر labeled=True باشد، فقط سفارش‌هایی که تا لحظه as_of نتیجه تحویلشان آمده را نگه می‌داریم
     if labeled:
         df = df[df["delivered_at"].notna() & df["outcome_available_at"].notna()].copy()
         if df.empty:
-            return pd.DataFrame(columns=["order_id", *FEATURE_COLUMNS, "late"])
+            return pd.DataFrame(
+                columns=["order_id", *FEATURE_COLUMNS, "approved_at", "label_available_at", "late"]
+            )
 
     # محاسبه ویژگی‌های زمانی بر اساس منطقه زمانی برزیل (America/Sao_Paulo)
     local_approved = df["approved_at"].apply(lambda dt: dt.astimezone(LOCAL_TZ))
@@ -515,7 +521,10 @@ def build_features(connection, order_ids=None, *, as_of, labeled=False) -> pd.Da
             int(deliv_date > prom_date)
             for deliv_date, prom_date in zip(local_delivered_date, df["promised_date"])
         ]
-        return df[["order_id", *FEATURE_COLUMNS, "late"]].reset_index(drop=True)
+        df["label_available_at"] = df["outcome_available_at"]
+        return df[
+            ["order_id", *FEATURE_COLUMNS, "approved_at", "label_available_at", "late"]
+        ].reset_index(drop=True)
 
     # در حالت پیش‌بینی (Serving)، فقط شناسه سفارش و 15 ویژگی مجاز برگردانده می‌شوند
     return df[["order_id", *FEATURE_COLUMNS]].reset_index(drop=True)
