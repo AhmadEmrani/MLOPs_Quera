@@ -183,6 +183,7 @@ def log_run(
                 sk_model=model,
                 name=model_artifact_path,
                 registered_model_name=registered_model_name,
+                serialization_format="cloudpickle",
             )
 
     return TrackingResult(

@@ -18,7 +18,12 @@ from sklearn.base import BaseEstimator
 from promiseops.data import build_features
 from promiseops.metrics import cohort_hash
 from promiseops.model_pipeline.bundle import save_bundle
-from promiseops.model_pipeline.candidates import build_candidates, fit_candidates, score_candidates
+from promiseops.model_pipeline.candidates import (
+    build_candidates,
+    fit_candidates,
+    positive_class_probability,
+    score_candidates,
+)
 from promiseops.model_pipeline.evaluation import (
     CandidateEvaluation,
     compare_candidate as apply_quality_gates,
@@ -59,8 +64,7 @@ def _instant(value: datetime | str, *, field: str) -> datetime:
 
 
 def _cohort_order_ids(connection, *, validation_end: datetime, as_of: datetime) -> list[str]:
-    statement = text(
-        """
+    statement = """
         SELECT orders.order_id
         FROM orders
         JOIN outcomes ON outcomes.order_id = orders.order_id
@@ -68,9 +72,18 @@ def _cohort_order_ids(connection, *, validation_end: datetime, as_of: datetime) 
           AND outcomes.available_at <= :as_of
         ORDER BY orders.approved_at, orders.order_id
         """
-    )
-    result = connection.execute(statement, {"validation_end": validation_end, "as_of": as_of})
-    return [str(order_id) for order_id in result.scalars().all()]
+    if hasattr(connection, "exec_driver_sql"):
+        result = connection.execute(
+            text(statement), {"validation_end": validation_end, "as_of": as_of}
+        )
+        return [str(order_id) for order_id in result.scalars().all()]
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            statement.replace(":validation_end", "%s").replace(":as_of", "%s"),
+            (validation_end, as_of),
+        )
+        return [str(row[0]) for row in cursor.fetchall()]
 
 
 def _schema_identity() -> str:
@@ -128,6 +141,7 @@ def train_candidate(
     validation_end: datetime | str,
     as_of: datetime | str,
     source_commit: str | None = None,
+    champion_model: BaseEstimator | None = None,
     registered_model_name: str | None = None,
     artifacts_dir: str | Path | None = None,
     min_train_size: int = 2,
@@ -187,9 +201,16 @@ def train_candidate(
         split.validation_order_ids,
     )
 
-    baseline_evaluation = evaluations[_BASELINE_NAME]
+    reference_evaluation = evaluations[_BASELINE_NAME]
+    if champion_model is not None:
+        champion_scores = positive_class_probability(champion_model, split.validation_rows)
+        reference_evaluation = evaluate_candidates(
+            {"champion": champion_scores},
+            split.validation_labels,
+            split.validation_order_ids,
+        )["champion"]
     decisions = {
-        name: apply_quality_gates(evaluation, baseline_evaluation)
+        name: apply_quality_gates(evaluation, reference_evaluation)
         for name, evaluation in evaluations.items()
     }
     selected_name = _select_candidate(evaluations, decisions)
@@ -253,7 +274,7 @@ def train_candidate(
                 f"candidates/{name}/release.json": bundle_dir / "release.json",
             },
             model=fitted_model,
-            model_artifact_path=f"models/{name}",
+            model_artifact_path=name,
             registered_model_name=registry_name,
         )
 
