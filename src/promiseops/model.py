@@ -30,7 +30,7 @@ from promiseops.model_pipeline.evaluation import (
     evaluate_candidates,
 )
 from promiseops.model_pipeline.split import TemporalSplit, select_temporal_split
-from promiseops.model_pipeline.tracking import TrackingResult, log_run
+from promiseops.model_pipeline.tracking import TrackingResult, log_run, prepare_tracking
 from promiseops.model_pipeline.validation import FEATURE_COLUMNS, LabeledFeatureRow, validate_feature_rows
 
 
@@ -148,6 +148,7 @@ def train_candidate(
     artifacts_dir: str | Path | None = None,
     min_train_size: int = 2,
     min_validation_size: int = 2,
+    allow_local_tracking: bool = False,
 ) -> TrainingResult:
     """Train, compare, package, and track all three candidate approaches.
 
@@ -155,6 +156,8 @@ def train_candidate(
     builder. The later test period is intentionally outside this function.
     The source snapshot is identified by ``PROMISEOPS_DATASET_ID`` when set;
     otherwise, a deterministic fingerprint of the selected labeled rows is used.
+    Local JSON/SQLite tracking requires explicit allow_local_tracking=True;
+    the worker uses the strict default.
     """
     train_cutoff = _instant(train_end, field="train_end")
     validation_cutoff = _instant(validation_end, field="validation_end")
@@ -165,6 +168,9 @@ def train_candidate(
     commit = source_commit or os.environ.get("CI_COMMIT_SHA")
     if not isinstance(commit, str) or not _COMMIT_PATTERN.fullmatch(commit):
         raise ValueError("source_commit or CI_COMMIT_SHA must be a 40-character lowercase Git SHA")
+    # Fail before fetching data or fitting models if tracking is misconfigured.
+    # Server connectivity and artifact permissions are checked by actual logging.
+    prepare_tracking(allow_local_tracking=allow_local_tracking)
     dataset_id = os.environ.get("PROMISEOPS_DATASET_ID")
 
     order_ids = _cohort_order_ids(
@@ -278,6 +284,7 @@ def train_candidate(
             model=fitted_model,
             model_artifact_path=name,
             registered_model_name=registry_name,
+            allow_local_tracking=allow_local_tracking,
         )
 
     return TrainingResult(

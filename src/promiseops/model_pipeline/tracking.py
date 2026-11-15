@@ -1,4 +1,4 @@
-"""MLflow candidate tracking with an explicit local JSON fallback."""
+"""Strict MLflow tracking with an explicitly opted-in local JSON backend."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 from sklearn.base import BaseEstimator
 
@@ -107,6 +108,47 @@ def _local_log_run(
     )
 
 
+def prepare_tracking(
+    *,
+    tracking_uri: str | None = None,
+    allow_local_tracking: bool = False,
+):
+    """Validate configuration and dependencies, without claiming server reachability.
+
+    Normal training requires an explicit HTTP(S) MLflow endpoint. Local/test
+    callers can opt in: with no URI they use JSON; with a URI they use MLflow
+    (including SQLite/file stores). An explicit URI never falls back to JSON.
+    Imports remain lazy so serving does not need MLflow installed.
+    """
+    raw_uri = tracking_uri if tracking_uri is not None else os.environ.get("MLFLOW_TRACKING_URI")
+    uri = raw_uri.strip() if raw_uri else ""
+    if not uri:
+        if allow_local_tracking:
+            return None
+        raise RuntimeError("MLFLOW_TRACKING_URI is required for training")
+
+    if not allow_local_tracking:
+        try:
+            parsed = urlsplit(uri)
+            valid = parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+            parsed.port  # Validate malformed ports without printing credentials.
+        except ValueError:
+            valid = False
+        if not valid:
+            raise RuntimeError("Training requires an HTTP(S) MLFLOW_TRACKING_URI")
+
+    try:
+        mlflow = importlib.import_module("mlflow")
+        importlib.import_module("mlflow.sklearn")
+    except ImportError as error:
+        raise RuntimeError(
+            "MLflow tracking dependencies are missing or broken; "
+            "install requirements-tracking.lock in the worker image"
+        ) from error
+    mlflow.set_tracking_uri(uri)
+    return mlflow
+
+
 def log_run(
     *,
     metrics: Mapping[str, int | float],
@@ -119,6 +161,7 @@ def log_run(
     run_name: str | None = None,
     tracking_uri: str | None = None,
     local_tracking_dir: str | Path | None = None,
+    allow_local_tracking: bool = False,
 ) -> TrackingResult:
     """Log one candidate run, artifacts, and optionally register its model.
 
@@ -144,11 +187,11 @@ def log_run(
         if destination.name != source_path.name:
             raise ValueError(f"artifact destination {name!r} must use source basename {source_path.name!r}")
 
-    try:
-        mlflow = importlib.import_module("mlflow")
-    except ModuleNotFoundError as error:
-        if error.name != "mlflow":
-            raise
+    mlflow = prepare_tracking(
+        tracking_uri=tracking_uri,
+        allow_local_tracking=allow_local_tracking,
+    )
+    if mlflow is None:
         return _local_log_run(
             metrics=metric_values,
             params=parameter_values,
@@ -160,9 +203,6 @@ def log_run(
         )
 
     mlflow_sklearn = importlib.import_module("mlflow.sklearn") if model is not None else None
-    uri = tracking_uri or os.environ.get("MLFLOW_TRACKING_URI")
-    if uri:
-        mlflow.set_tracking_uri(uri)
 
     model_info = None
     with mlflow.start_run(run_name=run_name) as run:
