@@ -24,7 +24,7 @@ contracts:
 build-own-image:
   stage: build
   resource_group: image-build
-    rules:
+  rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
   script:
     - cp -a /opt/promiseops/wheelhouse ./wheelhouse
@@ -37,7 +37,7 @@ build-own-image:
 inspect-own-namespaces:
   needs: []
   stage: inspect
-    rules:
+  rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
   allow_failure: true
