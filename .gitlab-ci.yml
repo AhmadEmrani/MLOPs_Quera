@@ -1,4 +1,4 @@
-stages: [test, build, inspect]
+stages: [test, build, sync, inspect]
 variables:
   UV_OFFLINE: "1"
   UV_PYTHON_DOWNLOADS: never
@@ -25,13 +25,12 @@ build-own-image:
   stage: build
   resource_group: image-build
   rules:
-    - if: '$CI_COMMIT_REF_PROTECTED == "true"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
   script:
     - cp -a /opt/promiseops/wheelhouse ./wheelhouse
     - mkdir -p "$HOME/.docker"
     - python ci/registry_login.py
     - buildctl --addr "$BUILDKIT_ADDR" --tlsservername "$BUILDKIT_SERVER_NAME" --tlscacert "$BUILDKIT_CA" --tlscert "$BUILDKIT_CERT" --tlskey "$BUILDKIT_KEY" build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt build-arg:BASE_IMAGE="$BASE_IMAGE" --opt build-arg:UV_IMAGE="$UV_IMAGE" --output type=image,name="$CI_REGISTRY_IMAGE/app:$CI_COMMIT_SHA",push=true --metadata-file build.json
-    - kubectl get deployments -n "$TEAM-prod" -o name
     - python -c 'import json; assert json.load(open("build.json"))["containerimage.digest"].startswith("sha256:")'
   artifacts:
     paths: [build.json]
@@ -39,12 +38,140 @@ inspect-own-namespaces:
   needs: []
   stage: inspect
   rules:
-    - if: '$CI_COMMIT_REF_PROTECTED == "true"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
       when: manual
   allow_failure: true
   script:
     - for area in staging prod; do kubectl get pods,deployments,jobs -n "$TEAM-$area"; done
     - kubectl get pods,jobs -n "$TEAM-jobs"
+
+package-airflow:
+  stage: test
+  script:
+    - |
+      set -eu
+
+      python - <<'PY'
+      import ast
+      import shutil
+      import sys
+      from pathlib import Path
+      from zipfile import ZipFile, ZIP_DEFLATED
+
+      root = Path("src")
+      package = root / "promiseops"
+      output = Path("dist/airflow")
+      output.mkdir(parents=True, exist_ok=True)
+
+      assert (package / "__init__.py").is_file(), \
+          "src/promiseops/__init__.py not found"
+
+      for name in ("ingestion.py", "training.py"):
+          source = Path("dags") / name
+          ast.parse(
+              source.read_text(encoding="utf-8"),
+              filename=str(source),
+          )
+          shutil.copy2(source, output / name)
+          print(f"DAG syntax OK: {source}")
+
+      archive_path = output / "promiseops.zip"
+
+      with ZipFile(archive_path, "w", ZIP_DEFLATED) as archive:
+          for path in sorted(package.rglob("*")):
+              if not path.is_file():
+                  continue
+              if "__pycache__" in path.parts or path.suffix == ".pyc":
+                  continue
+
+              if path.suffix == ".py":
+                  ast.parse(
+                      path.read_text(encoding="utf-8"),
+                      filename=str(path),
+                  )
+
+              archive.write(path, path.relative_to(root))
+
+      with ZipFile(archive_path) as archive:
+          assert "promiseops/__init__.py" in archive.namelist()
+          assert archive.testzip() is None
+
+      size = archive_path.stat().st_size
+      assert size < 180_000, (
+          f"ZIP is {size} bytes; exceeds our conservative CI limit. "
+          "Review package contents and ConfigMap delivery strategy."
+      )
+
+      sys.path.insert(0, str(archive_path.resolve()))
+      from importlib.util import find_spec
+
+      spec = find_spec("promiseops")
+      assert spec is not None and spec.origin is not None
+      assert str(archive_path.resolve()) in spec.origin, spec.origin
+
+      print(f"Package location OK: {spec.origin}")
+      print(f"ZIP size: {size} bytes")
+      PY
+  artifacts:
+    paths:
+      - dist/airflow/
+    expire_in: 7 days
+
+
+sync-airflow:
+  stage: sync
+  needs:
+    - job: contracts
+      artifacts: false
+    - job: package-airflow
+      artifacts: true
+  resource_group: airflow-sync
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: false
+  script:
+    - |
+      set -eu
+
+      test "${TEAM:-}" = "g02"
+
+      test -f dist/airflow/promiseops.zip
+      test -f dist/airflow/ingestion.py
+      test -f dist/airflow/training.py
+
+      kubectl get configmap team-code team-dags \
+        -n "$TEAM-platform" -o name
+
+      kubectl create configmap team-code \
+        -n "$TEAM-platform" \
+        --from-file=promiseops.zip=dist/airflow/promiseops.zip \
+        --dry-run=client -o yaml \
+        > dist/airflow/team-code.yaml
+
+      kubectl create configmap team-dags \
+        -n "$TEAM-platform" \
+        --from-file=ingestion.py=dist/airflow/ingestion.py \
+        --from-file=training.py=dist/airflow/training.py \
+        --dry-run=client -o yaml \
+        > dist/airflow/team-dags.yaml
+
+      kubectl apply -f dist/airflow/team-code.yaml
+      kubectl apply -f dist/airflow/team-dags.yaml
+
+      kubectl annotate configmap team-code \
+        -n "$TEAM-platform" \
+        promiseops.git-commit="$CI_COMMIT_SHA" \
+        --overwrite
+
+      kubectl annotate configmap team-dags \
+        -n "$TEAM-platform" \
+        promiseops.git-commit="$CI_COMMIT_SHA" \
+        --overwrite
+
+      echo "Airflow ConfigMaps synced from commit $CI_COMMIT_SHA"
+      echo "Next: check DAG visibility and Import Errors in Airflow."
+
 # Build success establishes a deployable image, not a working model or passing SLO.
 # Add reviewed model packaging, staging acceptance, and manually approved production
 # promotion with digest pinning and rollback as described in deploy/README.md.
