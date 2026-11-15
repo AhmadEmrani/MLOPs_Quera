@@ -21,6 +21,8 @@ def _argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-end", required=True)
     parser.add_argument("--validation-end", required=True)
     parser.add_argument("--as-of", required=True)
+    parser.add_argument("--min-train-size", type=int, default=1000)
+    parser.add_argument("--min-validation-size", type=int, default=200)
     return parser
 
 
@@ -35,13 +37,27 @@ def _database_url() -> str:
     return database_url
 
 
-def _persist_selected_bundle(result: TrainingResult, artifacts_dir: Path) -> Path:
+def _bundle_files(manifest: dict) -> tuple[str, ...]:
+    files = ["model.joblib", "release.json"]
+    for name in ("dataset_manifest.json", "feature_contract.json"):
+        if manifest.get(name.removesuffix(".json") + "_sha256") is not None:
+            files.append(name)
+    return tuple(files)
+
+
+def _persist_selected_bundle(result: TrainingResult, artifacts_dir: Path) -> Path | None:
+    # A rejected candidate must never overwrite the incumbent or existing release.
+    if result.selected_model_name is None:
+        return None
+    if not result.decisions[result.selected_model_name]["promote"]:
+        raise ValueError("refusing to export a candidate that failed quality gates")
     candidate_dir = artifacts_dir / "candidates" / result.selected_model_name
     release_path = Path(os.environ.get("PROMISEOPS_RELEASE", artifacts_dir / "release.json"))
     release_path.parent.mkdir(parents=True, exist_ok=True)
     if candidate_dir.resolve() != release_path.parent.resolve():
-        shutil.copy2(candidate_dir / "model.joblib", release_path.parent / "model.joblib")
-        shutil.copy2(candidate_dir / "release.json", release_path)
+        manifest = result.bundles[result.selected_model_name]
+        for filename in _bundle_files(manifest):
+            shutil.copy2(candidate_dir / filename, release_path.parent / filename)
     return release_path
 
 
@@ -56,18 +72,25 @@ def _load_incumbent(artifacts_dir: Path):
 
     copied_dir = artifacts_dir / "incumbent"
     copied_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(model_file, copied_dir / model_file.name)
-    shutil.copy2(manifest, copied_dir / manifest.name)
+    release_info = json.loads(manifest.read_text(encoding="utf-8"))
+    for filename in _bundle_files(release_info):
+        shutil.copy2(source_dir / filename, copied_dir / filename)
     model, _ = load_bundle(copied_dir)
     return model
 
 
-def _result_payload(result: TrainingResult, release_path: Path) -> dict:
+def _result_payload(result: TrainingResult, release_path: Path | None) -> dict:
     return {
         "status": "completed",
         "mode": "train",
         "selected_model": result.selected_model_name,
-        "release_path": str(release_path),
+        "release_path": str(release_path) if release_path is not None else None,
+        "release_created": release_path is not None,
+        "selection_decision": (
+            "candidate_ready_for_review"
+            if release_path is not None
+            else "no_candidate_passed_gates"
+        ),
         "candidates": {
             name: {
                 "metrics": evaluation.metrics,
@@ -86,7 +109,14 @@ def _result_payload(result: TrainingResult, release_path: Path) -> dict:
     }
 
 
-def run_training(*, train_end: str, validation_end: str, as_of: str) -> dict:
+def run_training(
+    *,
+    train_end: str,
+    validation_end: str,
+    as_of: str,
+    min_train_size: int = 1000,
+    min_validation_size: int = 200,
+) -> dict:
     artifacts_dir = Path(os.environ.get("PROMISEOPS_ARTIFACTS", "/tmp/artifacts"))
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     incumbent_model = _load_incumbent(artifacts_dir)
@@ -100,6 +130,8 @@ def run_training(*, train_end: str, validation_end: str, as_of: str) -> dict:
             source_commit=os.environ.get("CI_COMMIT_SHA"),
             champion_model=incumbent_model,
             artifacts_dir=artifacts_dir,
+            min_train_size=min_train_size,
+            min_validation_size=min_validation_size,
         )
     finally:
         connection.close()
@@ -126,6 +158,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             train_end=args.train_end,
             validation_end=args.validation_end,
             as_of=args.as_of,
+            min_train_size=args.min_train_size,
+            min_validation_size=args.min_validation_size,
         )
     except Exception as error:
         print(f"promiseops worker failed: {error}", file=sys.stderr)

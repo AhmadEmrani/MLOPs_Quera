@@ -117,6 +117,30 @@ def _validate_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+
+_OPTIONAL_BUNDLE_FILES = (
+    ("dataset_manifest_file", "dataset_manifest_sha256", "dataset_manifest.json"),
+    ("feature_contract_file", "feature_contract_sha256", "feature_contract.json"),
+)
+
+
+def _verify_auxiliary_files(directory: Path, manifest: dict[str, Any]) -> None:
+    """New bundles verify companion metadata, while legacy bundles still load."""
+    for file_key, digest_key, expected_filename in _OPTIONAL_BUNDLE_FILES:
+        filename = manifest.get(file_key)
+        digest = manifest.get(digest_key)
+        if filename is None and digest is None:
+            continue
+        if filename != expected_filename:
+            raise ValueError(f"{file_key} must be {expected_filename!r}")
+        if not isinstance(digest, str) or not _SHA256_PATTERN.fullmatch(digest):
+            raise ValueError(f"{digest_key} must be a lowercase SHA256 digest")
+        path = directory / filename
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"bundle companion file is missing or is not regular: {filename}")
+        if artifact_sha256(path) != digest:
+            raise ValueError(f"bundle companion checksum mismatch: {filename}")
+
 def _software_versions() -> dict[str, str]:
     packages = {
         "joblib": "joblib",
@@ -190,6 +214,7 @@ def save_bundle(model: Any, release_dir: str | Path, metadata: dict[str, Any]) -
 
     destination = Path(release_dir)
     destination.mkdir(parents=True, exist_ok=True)
+    _verify_auxiliary_files(destination, release)
     model_path = destination / MODEL_FILENAME
     temporary_model: Path | None = None
     try:
@@ -237,6 +262,7 @@ def load_bundle(release_dir: str | Path) -> tuple[Any, dict[str, Any]]:
     if release.get("model_version") != model_version(expected_digest):
         raise ValueError("model_version does not match the artifact digest")
     _validate_metadata(release)
+    _verify_auxiliary_files(directory, release)
 
     model_path = directory / MODEL_FILENAME
     if model_path.is_symlink() or not model_path.is_file():
