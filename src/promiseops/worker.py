@@ -35,7 +35,13 @@ def _database_url() -> str:
     return database_url
 
 
-def _persist_selected_bundle(result: TrainingResult, artifacts_dir: Path) -> Path:
+def _persist_selected_bundle(result: TrainingResult, artifacts_dir: Path) -> Path | None:
+    # Rejection is a successful evaluation, not permission to publish a fallback.
+    # Leave the incumbent and any existing release untouched.
+    if result.selected_model_name is None:
+        return None
+    if not result.decisions[result.selected_model_name]["promote"]:
+        raise ValueError("refusing to export a candidate that failed quality gates")
     candidate_dir = artifacts_dir / "candidates" / result.selected_model_name
     release_path = Path(os.environ.get("PROMISEOPS_RELEASE", artifacts_dir / "release.json"))
     release_path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,12 +68,18 @@ def _load_incumbent(artifacts_dir: Path):
     return model
 
 
-def _result_payload(result: TrainingResult, release_path: Path) -> dict:
+def _result_payload(result: TrainingResult, release_path: Path | None) -> dict:
     return {
         "status": "completed",
         "mode": "train",
         "selected_model": result.selected_model_name,
-        "release_path": str(release_path),
+        "release_path": str(release_path) if release_path is not None else None,
+        "release_created": release_path is not None,
+        "selection_decision": (
+            "candidate_ready_for_review"
+            if release_path is not None
+            else "no_candidate_passed_gates"
+        ),
         "candidates": {
             name: {
                 "metrics": evaluation.metrics,

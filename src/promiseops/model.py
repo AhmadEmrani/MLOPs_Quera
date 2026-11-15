@@ -47,8 +47,8 @@ class TrainingResult:
     decisions: dict[str, dict[str, Any]]
     tracking: dict[str, TrackingResult]
     bundles: dict[str, dict[str, Any]]
-    selected_model_name: str
-    selected_model: BaseEstimator
+    selected_model_name: str | None
+    selected_model: BaseEstimator | None
     split: TemporalSplit
 
 
@@ -115,14 +115,16 @@ def _model_params(model: BaseEstimator) -> dict[str, Any]:
 def _select_candidate(
     evaluations: dict[str, CandidateEvaluation],
     decisions: dict[str, dict[str, Any]],
-) -> str:
+) -> str | None:
     passing = [
         name
         for name in ("logistic_regression", "random_forest")
         if decisions[name]["promote"]
     ]
     if not passing:
-        return _BASELINE_NAME
+        # Baseline is a valid fallback only if it passed the same reference gates.
+        # With an incumbent, all candidates (including baseline) may be rejected.
+        return _BASELINE_NAME if decisions[_BASELINE_NAME]["promote"] else None
     return max(
         passing,
         key=lambda name: (
@@ -285,7 +287,7 @@ def train_candidate(
         tracking=tracking_results,
         bundles=bundle_manifests,
         selected_model_name=selected_name,
-        selected_model=fitted_candidates[selected_name],
+        selected_model=(fitted_candidates[selected_name] if selected_name is not None else None),
         split=split,
     )
 
