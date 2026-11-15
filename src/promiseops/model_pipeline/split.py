@@ -111,8 +111,8 @@ def select_temporal_split(
     train_end: datetime | str,
     validation_end: datetime | str,
     as_of: datetime | str,
-    min_train_size: int = 2,
-    min_validation_size: int = 2,
+    min_train_size: int = 1000,
+    min_validation_size: int = 200,
 ) -> TemporalSplit:
     """Select mature training and validation cohorts from labeled feature rows.
 
@@ -121,23 +121,26 @@ def select_temporal_split(
     by ``validation_end``, with labels available by ``as_of``. Other rows are
     returned in ``excluded`` with an ``exclusion_reason`` column.
 
-    The default cohort size is the minimum capable of containing both classes.
-    Callers should pass larger limits when their evaluation policy requires
-    them; the public project contract does not prescribe a numeric minimum.
+    Defaults (1000 train / 200 validation) are the team's operational policy,
+    not a minimum prescribed by the public project contract. Both cohorts
+    must include each label class.
     """
     train_cutoff = _instant(train_end, field="train_end")
     validation_cutoff = _instant(validation_end, field="validation_end")
     evaluation_time = _instant(as_of, field="as_of")
     if not train_cutoff < validation_cutoff <= evaluation_time:
         raise ValueError("cutoffs must satisfy train_end < validation_end <= as_of")
-    if min_train_size < 2 or min_validation_size < 2:
-        raise ValueError("minimum cohort sizes must be at least 2 to contain both classes")
+    if any(type(value) is not int or value < 2 for value in (min_train_size, min_validation_size)):
+        raise ValueError("minimum cohort sizes must be integers of at least 2")
 
     frame = _prepare_frame(rows)
     train_window = frame["approved_at"] <= train_cutoff
     validation_window = frame["approved_at"].gt(train_cutoff) & frame["approved_at"].le(
         validation_cutoff
     )
+    if (frame["label_available_at"] < frame["approved_at"]).any():
+        raise ValueError("label availability cannot precede order approval")
+
     train_mature = frame["label_available_at"] <= train_cutoff
     validation_mature = frame["label_available_at"] <= evaluation_time
 
@@ -163,6 +166,8 @@ def select_temporal_split(
         raise ValueError(
             f"validation cohort has {len(validation_rows)} rows; minimum is {min_validation_size}"
         )
+    if not set(train_rows["order_id"]).isdisjoint(validation_rows["order_id"]):
+        raise ValueError("training and validation order IDs must not overlap")
     _require_both_classes(train_rows, cohort="training")
     _require_both_classes(validation_rows, cohort="validation")
 

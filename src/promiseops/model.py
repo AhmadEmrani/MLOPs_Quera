@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,9 +16,9 @@ import pandas as pd
 from sqlalchemy import text
 from sklearn.base import BaseEstimator
 
-from promiseops.data import build_features
+from promiseops.data import build_features, training_snapshot, training_source_lineage
 from promiseops.metrics import cohort_hash
-from promiseops.model_pipeline.bundle import save_bundle
+from promiseops.model_pipeline.bundle import artifact_sha256, save_bundle
 from promiseops.model_pipeline.candidates import (
     build_candidates,
     fit_candidates,
@@ -70,6 +71,7 @@ def _cohort_order_ids(connection, *, validation_end: datetime, as_of: datetime) 
         JOIN outcomes ON outcomes.order_id = orders.order_id
         WHERE orders.approved_at <= :validation_end
           AND outcomes.available_at <= :as_of
+          AND orders.batch_available_at <= :as_of
         ORDER BY orders.approved_at, orders.order_id
         """
     if hasattr(connection, "exec_driver_sql"):
@@ -101,6 +103,55 @@ def _dataset_identity(frame: pd.DataFrame) -> str:
     ordered = frame.sort_values("order_id", kind="mergesort")
     payload = ordered.to_json(orient="records", date_format="iso", double_precision=15)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _write_json(path: Path, content: dict[str, Any]) -> str:
+    """Write a deterministic manifest and return its file checksum."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(content, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    return artifact_sha256(path)
+
+
+def _cohort_stats(labels: tuple[int, ...], order_ids: tuple[str, ...]) -> dict[str, Any]:
+    n = len(labels)
+    late = sum(int(label) for label in labels)
+    return {
+        "n": n,
+        "late": late,
+        "prevalence": late / n,
+        "cohort_hash": cohort_hash(order_ids),
+    }
+
+
+def _feature_contract() -> dict[str, Any]:
+    schema = LabeledFeatureRow.model_json_schema()
+    properties = schema["properties"]
+    return {
+        "schema_version": 1,
+        "feature_names": list(FEATURE_COLUMNS),
+        "properties": {name: properties[name] for name in FEATURE_COLUMNS},
+        "required": [name for name in FEATURE_COLUMNS if name in schema.get("required", [])],
+        "$defs": schema.get("$defs", {}),
+        "prediction_time": "approved_at",
+    }
+
+
+def _cohort_metrics(split: TemporalSplit, source_lineage: dict[str, Any]) -> dict[str, float]:
+    train = _cohort_stats(split.train_labels, split.train_order_ids)
+    validation = _cohort_stats(split.validation_labels, split.validation_order_ids)
+    return {
+        "train_n": float(train["n"]),
+        "train_late": float(train["late"]),
+        "train_prevalence": train["prevalence"],
+        "validation_n": float(validation["n"]),
+        "validation_late": float(validation["late"]),
+        "validation_prevalence": validation["prevalence"],
+        "customer_overlap_n": float(source_lineage["customer_overlap_n"]),
+        "order_batch_after_approval_n": float(source_lineage["order_batch_after_approval_n"]),
+    }
 
 
 def _model_params(model: BaseEstimator) -> dict[str, Any]:
@@ -146,8 +197,8 @@ def train_candidate(
     champion_model: BaseEstimator | None = None,
     registered_model_name: str | None = None,
     artifacts_dir: str | Path | None = None,
-    min_train_size: int = 2,
-    min_validation_size: int = 2,
+    min_train_size: int = 1000,
+    min_validation_size: int = 200,
     allow_local_tracking: bool = False,
 ) -> TrainingResult:
     """Train, compare, package, and track all three candidate approaches.
@@ -173,32 +224,48 @@ def train_candidate(
     prepare_tracking(allow_local_tracking=allow_local_tracking)
     dataset_id = os.environ.get("PROMISEOPS_DATASET_ID")
 
-    order_ids = _cohort_order_ids(
-        connection,
-        validation_end=validation_cutoff,
-        as_of=evaluation_time,
-    )
-    if not order_ids:
-        raise ValueError("no labeled orders are available for the selected validation window")
+    # All source reads (cohort, features, receipt inventory and leakage audit)
+    # use the same repeatable-read snapshot. init_db commits only before it.
+    with training_snapshot(connection):
+        order_ids = _cohort_order_ids(
+            connection,
+            validation_end=validation_cutoff,
+            as_of=evaluation_time,
+        )
+        if not order_ids:
+            raise ValueError("no labeled orders are available for the selected validation window")
 
-    feature_rows = build_features(
-        connection,
-        order_ids,
-        as_of=evaluation_time,
-        labeled=True,
-    )
-    validated_rows = validate_feature_rows(feature_rows, labeled=True)
-    labeled_frame = pd.DataFrame(
-        [row.model_dump() for row in validated_rows]
-    )
-    split = select_temporal_split(
-        labeled_frame,
-        train_end=train_cutoff,
-        validation_end=validation_cutoff,
-        as_of=evaluation_time,
-        min_train_size=min_train_size,
-        min_validation_size=min_validation_size,
-    )
+        feature_rows = build_features(
+            connection,
+            order_ids,
+            as_of=evaluation_time,
+            labeled=True,
+            ensure_schema=False,
+        )
+        validated_rows = validate_feature_rows(feature_rows, labeled=True)
+        labeled_frame = pd.DataFrame([row.model_dump() for row in validated_rows])
+        split = select_temporal_split(
+            labeled_frame,
+            train_end=train_cutoff,
+            validation_end=validation_cutoff,
+            as_of=evaluation_time,
+            min_train_size=min_train_size,
+            min_validation_size=min_validation_size,
+        )
+        source_lineage = training_source_lineage(
+            connection,
+            as_of=evaluation_time,
+            train_order_ids=split.train_order_ids,
+            validation_order_ids=split.validation_order_ids,
+        )
+
+    # Explicit checks against accidental post-approval/outcome data in features.
+    prohibited = {
+        "late", "delivered_at", "outcome_available_at", "label_available_at",
+        "order_id", "customer_id", "status", "review",
+    }
+    if prohibited.intersection(FEATURE_COLUMNS):
+        raise ValueError("feature contract includes an identifier or an outcome column")
 
     candidates = build_candidates()
     fitted_candidates = fit_candidates(candidates, split.train_rows, split.train_labels)
@@ -229,13 +296,54 @@ def train_candidate(
     )
     dataset_fingerprint = _dataset_identity(labeled_frame)
     dataset_id = dataset_id or f"sha256:{dataset_fingerprint}"
+    schema_identity = _schema_identity()
     tracking_results: dict[str, TrackingResult] = {}
     bundle_manifests: dict[str, dict[str, Any]] = {}
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    feature_contract_path = output_root / "feature_contract.json"
+    feature_contract_sha256 = _write_json(feature_contract_path, _feature_contract())
+
+    train_stats = _cohort_stats(split.train_labels, split.train_order_ids)
+    validation_stats = _cohort_stats(split.validation_labels, split.validation_order_ids)
+    manifest_data = {
+        "manifest_version": 1,
+        "dataset_identity": dataset_id,
+        "dataset_fingerprint": dataset_fingerprint,
+        "schema_identity": schema_identity,
+        "feature_contract_sha256": feature_contract_sha256,
+        "source_commit": commit,
+        "train_end": train_cutoff.isoformat(),
+        "validation_end": validation_cutoff.isoformat(),
+        "as_of": evaluation_time.isoformat(),
+        "label_cutoff": train_cutoff.isoformat(),
+        "cohort_policy": {
+            "min_train_size": min_train_size,
+            "min_validation_size": min_validation_size,
+        },
+        "train": train_stats,
+        "validation": validation_stats,
+        "excluded": {
+            "n": len(split.excluded),
+            "reasons": {
+                str(key): int(value)
+                for key, value in split.excluded["exclusion_reason"].value_counts().items()
+            },
+        },
+        "source_lineage": source_lineage,
+        "test_policy": "untouched_not_used_in_training_or_selection",
+    }
+    dataset_manifest_path = output_root / "dataset_manifest.json"
+    dataset_manifest_sha256 = _write_json(dataset_manifest_path, manifest_data)
+    cohort_metrics = _cohort_metrics(split, source_lineage)
 
     for name, fitted_model in fitted_candidates.items():
         evaluation = evaluations[name]
         gate_decision = decisions[name]
         bundle_dir = output_root / "candidates" / name
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        for auxiliary in (dataset_manifest_path, feature_contract_path):
+            shutil.copy2(auxiliary, bundle_dir / auxiliary.name)
         manifest = save_bundle(
             fitted_model,
             bundle_dir,
@@ -244,7 +352,11 @@ def train_candidate(
                 "source_commit": commit,
                 "dataset_identity": dataset_id,
                 "dataset_fingerprint": dataset_fingerprint,
-                "schema_identity": _schema_identity(),
+                "schema_identity": schema_identity,
+                "feature_contract_file": "feature_contract.json",
+                "feature_contract_sha256": feature_contract_sha256,
+                "dataset_manifest_file": "dataset_manifest.json",
+                "dataset_manifest_sha256": dataset_manifest_sha256,
                 "train_end": train_cutoff,
                 "validation_end": validation_cutoff,
                 "as_of": evaluation_time,
@@ -269,8 +381,21 @@ def train_candidate(
         tracking_results[name] = log_run(
             run_name=f"{name}-{commit[:12]}",
             params=params,
-            metrics=evaluation.metrics,
+            metrics={**evaluation.metrics, **cohort_metrics},
             tags={
+                "dataset_identity": dataset_id,
+                "dataset_fingerprint": dataset_fingerprint,
+                "schema_identity": schema_identity,
+                "feature_contract_sha256": feature_contract_sha256,
+                "dataset_manifest_sha256": dataset_manifest_sha256,
+                "model_version": manifest["model_version"],
+                "artifact_sha256": manifest["artifact_sha256"],
+                "train_end": train_cutoff.isoformat(),
+                "validation_end": validation_cutoff.isoformat(),
+                "as_of": evaluation_time.isoformat(),
+                "label_cutoff": train_cutoff.isoformat(),
+                "gate_decision": json.dumps(gate_decision, sort_keys=True, default=str),
+                "software_versions": json.dumps(manifest["software_versions"], sort_keys=True),
                 "model_name": name,
                 "source_commit": commit,
                 "cohort_hash": evaluation.cohort_hash,
@@ -280,8 +405,11 @@ def train_candidate(
             artifacts={
                 f"candidates/{name}/model.joblib": bundle_dir / "model.joblib",
                 f"candidates/{name}/release.json": bundle_dir / "release.json",
+                f"candidates/{name}/dataset_manifest.json": bundle_dir / "dataset_manifest.json",
+                f"candidates/{name}/feature_contract.json": bundle_dir / "feature_contract.json",
             },
             model=fitted_model,
+            input_example=split.train_rows.loc[:, FEATURE_COLUMNS].head(5),
             model_artifact_path=name,
             registered_model_name=registry_name,
             allow_local_tracking=allow_local_tracking,

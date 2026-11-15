@@ -156,6 +156,7 @@ def log_run(
     artifacts: Mapping[str, str | Path] | None = None,
     registered_model_name: str | None = None,
     model: BaseEstimator | None = None,
+    input_example: Any | None = None,
     model_artifact_path: str = "model",
     tags: Mapping[str, str] | None = None,
     run_name: str | None = None,
@@ -177,6 +178,8 @@ def log_run(
     tag_values = dict(tags or {})
     if registered_model_name and model is None:
         raise ValueError("model is required when registered_model_name is set")
+    if input_example is not None and model is None:
+        raise ValueError("input_example requires a fitted model")
     if not model_artifact_path or _artifact_destination(model_artifact_path).as_posix() != model_artifact_path:
         raise ValueError("model_artifact_path must be a safe relative path")
     for name, source in artifact_values.items():
@@ -219,11 +222,22 @@ def log_run(
                 artifact_path = None
             mlflow.log_artifact(str(source_value), artifact_path=artifact_path)
         if model is not None:
+            log_options: dict[str, Any] = {}
+            if input_example is not None:
+                # MLflow's default sklearn pyfunc flavor calls predict(), not
+                # predict_proba(). Keep the signature aligned with that behavior;
+                # PromiseOps serving calls predict_proba() on the same pipeline.
+                infer_signature = importlib.import_module("mlflow.models").infer_signature
+                log_options["signature"] = infer_signature(
+                    input_example, model.predict(input_example)
+                )
+                log_options["input_example"] = input_example
             model_info = mlflow_sklearn.log_model(
                 sk_model=model,
                 name=model_artifact_path,
                 registered_model_name=registered_model_name,
                 serialization_format="cloudpickle",
+                **log_options,
             )
 
     return TrackingResult(

@@ -3,7 +3,8 @@
 import hashlib
 import json
 import os
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -105,6 +106,102 @@ def init_db(connection: Any) -> None:
     with raw_conn.cursor() as cur:
         cur.execute(SCHEMA_SQL)
     raw_conn.commit()
+
+
+@contextmanager
+def training_snapshot(connection):
+    """Use one repeatable-read, read-only snapshot for a training run's reads.
+
+    Schema creation runs *before* the snapshot because init_db commits. No
+    ingest or serving transaction behavior is changed by this context manager.
+    """
+    if hasattr(connection, "exec_driver_sql"):
+        # Compatibility with SQLAlchemy Connection; training worker uses psycopg.
+        connection.exec_driver_sql(SCHEMA_SQL)
+        connection.commit()
+        with connection.begin():
+            connection.exec_driver_sql("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            yield
+    elif hasattr(connection, "transaction"):
+        init_db(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            yield
+    else:
+        raise TypeError("training_snapshot requires a psycopg or SQLAlchemy connection")
+
+
+def _training_query(connection, statement: str, parameters: dict[str, Any]) -> list[tuple]:
+    """Execute a read query on the caller's existing snapshot."""
+    if hasattr(connection, "exec_driver_sql"):
+        from sqlalchemy import text
+
+        return list(connection.execute(text(statement), parameters).all())
+    # Static internal SQL only; bind values using psycopg named placeholders.
+    for parameter in parameters:
+        statement = statement.replace(f":{parameter}", f"%({parameter})s")
+    with connection.cursor() as cursor:
+        cursor.execute(statement, parameters)
+        return cursor.fetchall()
+
+
+def training_source_lineage(
+    connection,
+    *,
+    as_of: datetime,
+    train_order_ids: tuple[str, ...],
+    validation_order_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    """Summarize source receipts and customer overlap within the same snapshot.
+
+    Receipts are an observed upstream inventory, NOT a guaranteed mapping of
+    specific orders to batches: the database doesn't store that relationship.
+    """
+    receipts = _training_query(
+        connection,
+        """SELECT batch_id, kind, available_at, payload_sha256
+           FROM batch_receipts WHERE available_at <= :as_of
+           ORDER BY available_at, kind, batch_id""",
+        {"as_of": as_of},
+    )
+    train_ids = list(train_order_ids)
+    validation_ids = list(validation_order_ids)
+    all_ids = train_ids + validation_ids
+    overlap = _training_query(
+        connection,
+        """SELECT COUNT(*) FROM (
+               SELECT customer_id FROM orders
+               WHERE order_id = ANY(CAST(:all_ids AS varchar[]))
+               GROUP BY customer_id
+               HAVING BOOL_OR(order_id = ANY(CAST(:train_ids AS varchar[])))
+                  AND BOOL_OR(order_id = ANY(CAST(:validation_ids AS varchar[])))
+           ) AS overlapping_customers""",
+        {"all_ids": all_ids, "train_ids": train_ids, "validation_ids": validation_ids},
+    )[0][0]
+    availability_audit = _training_query(
+        connection,
+        """SELECT COUNT(*) FROM orders
+           WHERE order_id = ANY(CAST(:all_ids AS varchar[]))
+             AND batch_available_at > approved_at""",
+        {"all_ids": all_ids},
+    )[0][0]
+    return {
+        "receipts_scope": "all_receipts_available_by_as_of_not_proven_consumed",
+        "observed_receipts": [
+            {
+                "batch_id": batch_id,
+                "kind": kind,
+                "available_at": available_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                "payload_sha256": payload_sha256,
+            }
+            for batch_id, kind, available_at, payload_sha256 in receipts
+        ],
+        "customer_overlap_n": int(overlap),
+        # This is an audit signal; feed publication time may differ from the
+        # time approval-time features became known in the source system.
+        "order_batch_after_approval_n": int(availability_audit),
+    }
 
 
 def _quarantine_and_raise(raw_conn, batch_id: str | None, sha256: str | None, reason: str, raw_text: str):
@@ -375,10 +472,17 @@ FEATURE_COLUMNS = [
 ]
 
 
-def build_features(connection, order_ids=None, *, as_of, labeled=False) -> pd.DataFrame:
-    """Aggregate one-to-many relations independently; never use outcome fields as features."""
+def build_features(
+    connection, order_ids=None, *, as_of, labeled=False, ensure_schema: bool = True
+) -> pd.DataFrame:
+    """Aggregate relations without fan-out or outcome-derived features.
+
+    Training calls this with ensure_schema=False while its read-only snapshot
+    is active. Serving and other callers retain the original default.
+    """
     raw_conn = _get_raw_conn(connection)
-    init_db(raw_conn)
+    if ensure_schema:
+        init_db(raw_conn)
     as_of_utc = instant(as_of)
 
     # اگر لیست خاصی از order_idها داده شده، بررسی کنیم که خالی نباشد
