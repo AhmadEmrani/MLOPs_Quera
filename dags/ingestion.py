@@ -40,6 +40,34 @@ def promiseops_ingestion():
     def validate_cutoff() -> str:
         from airflow.sdk import get_current_context
 
+        # Airflow 3 runs TaskFlow functions in an independent task process.
+        # Set the ZIP path *inside* the task, not only at DAG parse time.
+        import sys
+        from pathlib import Path
+        from zipfile import ZipFile
+
+        archive_path = Path("/opt/airflow/team-code/promiseops.zip")
+        if not archive_path.is_file():
+            raise RuntimeError(
+                f"PromiseOps ZIP is not mounted in this Airflow task: {archive_path}"
+            )
+        with ZipFile(archive_path) as archive:
+            if "promiseops/contracts.py" not in archive.namelist():
+                raise RuntimeError("promiseops/contracts.py is missing from the mounted ZIP")
+        # Fail clearly if another installed/stale package shadows the ZIP.
+        zip_location = str(archive_path)
+        if zip_location in sys.path:
+            sys.path.remove(zip_location)
+        sys.path.insert(0, zip_location)
+        from importlib.util import find_spec
+
+        spec = find_spec("promiseops")
+        origin = str(spec.origin) if spec is not None else "<not found>"
+        if not origin.startswith(zip_location + "/"):
+            raise RuntimeError(
+                f"Airflow task resolved promiseops from {origin}, not {zip_location}"
+            )
+
         from promiseops.contracts import instant
 
         raw_as_of = get_current_context()["params"].get("as_of", "")
@@ -56,6 +84,34 @@ def promiseops_ingestion():
     def ingest_feed(as_of: str) -> dict:
         from airflow.sdk import BaseHook
         from airflow.sdk.exceptions import AirflowFailException
+
+        # Airflow 3 runs TaskFlow functions in an independent task process.
+        # Set the ZIP path *inside* the task, not only at DAG parse time.
+        import sys
+        from pathlib import Path
+        from zipfile import ZipFile
+
+        archive_path = Path("/opt/airflow/team-code/promiseops.zip")
+        if not archive_path.is_file():
+            raise RuntimeError(
+                f"PromiseOps ZIP is not mounted in this Airflow task: {archive_path}"
+            )
+        with ZipFile(archive_path) as archive:
+            if "promiseops/contracts.py" not in archive.namelist():
+                raise RuntimeError("promiseops/contracts.py is missing from the mounted ZIP")
+        # Fail clearly if another installed/stale package shadows the ZIP.
+        zip_location = str(archive_path)
+        if zip_location in sys.path:
+            sys.path.remove(zip_location)
+        sys.path.insert(0, zip_location)
+        from importlib.util import find_spec
+
+        spec = find_spec("promiseops")
+        origin = str(spec.origin) if spec is not None else "<not found>"
+        if not origin.startswith(zip_location + "/"):
+            raise RuntimeError(
+                f"Airflow task resolved promiseops from {origin}, not {zip_location}"
+            )
 
         from promiseops.data import get_connection, sync_feed
 
