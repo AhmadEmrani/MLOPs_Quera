@@ -1,6 +1,12 @@
 """Airflow orchestration for contract-checked feed ingestion."""
 
 import json
+import sys
+
+# ConfigMap mounts the archive; Python must search the ZIP itself, not just its parent.
+_PROMISEOPS_ZIP = "/opt/airflow/team-code/promiseops.zip"
+if _PROMISEOPS_ZIP not in sys.path:
+    sys.path.insert(0, _PROMISEOPS_ZIP)
 import logging
 from datetime import timedelta
 from urllib.parse import urlsplit
