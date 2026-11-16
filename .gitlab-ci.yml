@@ -74,6 +74,8 @@ package-airflow:
 
       with ZipFile(archive_path) as archive:
           assert "promiseops/__init__.py" in archive.namelist()
+          assert "promiseops/contracts.py" in archive.namelist(), \
+          "contracts.py is missing from the Airflow ZIP"
           assert archive.testzip() is None
 
       size = archive_path.stat().st_size
