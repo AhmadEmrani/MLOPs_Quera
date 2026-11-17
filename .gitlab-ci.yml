@@ -206,6 +206,7 @@ sync-airflow:
         -n "$TEAM-platform" \
         --from-file=ingestion.py=dist/airflow/ingestion.py \
         --from-file=training.py=dist/airflow/training.py \
+        --from-file=promiseops.zip=dist/airflow/promiseops.zip \
         --dry-run=client -o yaml \
         > dist/airflow/team-dags.yaml
 
