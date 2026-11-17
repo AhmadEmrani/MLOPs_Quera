@@ -5,7 +5,7 @@ import json
 import sys
 
 # ConfigMap mounts the archive; Python must search the ZIP itself, not just its parent.
-_PROMISEOPS_ZIP = "/opt/airflow/team-code/promiseops.zip"
+_PROMISEOPS_ZIP = "/opt/airflow/dags/promiseops.zip"
 if _PROMISEOPS_ZIP not in sys.path:
     sys.path.insert(0, _PROMISEOPS_ZIP)
 import logging
@@ -52,7 +52,7 @@ def promiseops_training():
         from pathlib import Path
         from zipfile import ZipFile
 
-        archive_path = Path("/opt/airflow/team-code/promiseops.zip")
+        archive_path = Path("/opt/airflow/dags/promiseops.zip")
         if not archive_path.is_file():
             raise RuntimeError(
                 f"PromiseOps ZIP is not mounted in this Airflow task: {archive_path}"
@@ -125,7 +125,7 @@ def promiseops_training():
         from pathlib import Path
         from zipfile import ZipFile
 
-        archive_path = Path("/opt/airflow/team-code/promiseops.zip")
+        archive_path = Path("/opt/airflow/dags/promiseops.zip")
         if not archive_path.is_file():
             raise RuntimeError(
                 f"PromiseOps ZIP is not mounted in this Airflow task: {archive_path}"
