@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "promiseops.fullname" . }}
+  labels:
+    {{- include "promiseops.labels" . | nindent 4 }}
+spec:
+  # ClusterIP only; NodePort and LoadBalancer are prohibited by platform policy.
+  type: ClusterIP
+  selector:
+    {{- include "promiseops.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
