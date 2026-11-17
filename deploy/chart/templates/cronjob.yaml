@@ -1,0 +1,63 @@
+{{- if .Values.batchJob.enabled }}
+# Bounded batch-scoring job; no concurrent runs allowed.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "promiseops.fullname" . }}-batch
+  labels:
+    {{- include "promiseops.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.batchJob.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ .Values.batchJob.activeDeadlineSeconds }}
+      backoffLimit: {{ .Values.batchJob.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            # Intentionally separate from promiseops.selectorLabels so batch pods
+            # are excluded from the API Service endpoints and PDB headcount.
+            app.kubernetes.io/name: {{ .Chart.Name }}
+            app.kubernetes.io/instance: {{ .Release.Name }}-batch
+            app.kubernetes.io/component: batch
+        spec:
+          serviceAccountName: {{ .Values.serviceAccount.name }}
+          automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          restartPolicy: Never
+          containers:
+            - name: batch
+              image: {{ include "promiseops.image" . | quote }}
+              imagePullPolicy: IfNotPresent
+              args: {{ .Values.batchJob.args | toJson }}
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.runtimeConfig.secretName }}
+              resources:
+                {{- toYaml .Values.batchJob.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi
+{{- end }}
