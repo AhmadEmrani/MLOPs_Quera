@@ -1,0 +1,86 @@
+# Base defaults – override per environment with values.staging.yaml / values.prod.yaml
+
+replicaCount: 1
+
+image:
+  repository: registry.example.com/g02/promiseops/app
+  # Empty string forces the required() check in promiseops.image helper to fail fast.
+  # CI must supply the real digest with: --set image.digest=sha256:<64hex>
+  digest: ""
+
+# Name of the ServiceAccount pre-created by platform staff. Do not create it here.
+serviceAccount:
+  name: promiseops-api
+
+# Name of the registry pull secret pre-created by platform staff.
+imagePullSecrets:
+  - name: registry-pull-secret
+
+service:
+  # ClusterIP is hardcoded in api-service.yaml; this only controls the port.
+  port: 80
+  # containerPort is fixed at 8080 (Dockerfile / Uvicorn).
+
+# README budget: 3 CPU / 3 GiB for prod.
+# 3 HPA replicas × 750m = 2.25 CPU + 1 surge = 3 CPU; 3 × 768Mi = 2.25 GiB – both fit.
+# If batchJob is also enabled in prod, the batch pod (750m/768Mi) pushes totals to
+# 3.75 CPU / 3.75 GiB – over budget. Keep batchJob.enabled: false in prod until
+# quota is raised or limits are renegotiated with platform staff.
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 750m
+    memory: 768Mi
+
+probes:
+  liveness:
+    path: /healthz
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    failureThreshold: 3
+    timeoutSeconds: 3
+  readiness:
+    # Returns 503 when model bundle or DB is unavailable.
+    path: /readyz
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 3
+
+lifecycle:
+  # Drain in-flight requests before the container is stopped.
+  preStopSleepSeconds: 10
+
+terminationGracePeriodSeconds: 45
+
+runtimeConfig:
+  # Name of the runtime-config Secret pre-created by platform staff.
+  secretName: runtime-config
+
+hpa:
+  enabled: false
+  # minReplicas is only meaningful in prod (values.prod.yaml); kept here as a safe default.
+  minReplicas: 2
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+
+pdb:
+  # Rendered only when replicaCount > 1; disable if cluster policy prohibits PDBs.
+  enabled: true
+
+batchJob:
+  enabled: false
+  schedule: "0 2 * * *"
+  activeDeadlineSeconds: 3600
+  backoffLimit: 2
+  # args passed to the container. Update once the CLI subcommand is implemented.
+  args: ["batch"]
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 750m
+      memory: 768Mi
