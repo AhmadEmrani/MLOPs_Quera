@@ -236,6 +236,165 @@ inspect-own-namespaces:
     - for area in staging prod; do kubectl get pods,deployments,jobs -n "$TEAM-$area"; done
     - kubectl get pods,jobs -n "$TEAM-jobs"
 
+
+debug-airflow-mounts:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      python - <<'PY'
+      import json
+      import os
+      import subprocess
+
+      ns = f"{os.environ.get('TEAM', '')}-platform"
+      if ns != "g02-platform":
+          raise SystemExit(f"Unexpected namespace: {ns}")
+
+      def run(*args):
+          return subprocess.run(
+              ["kubectl", "-n", ns, *args],
+              capture_output=True,
+              text=True,
+              check=False,
+          )
+
+      print("=== 1. ConfigMap keys (no values) ===", flush=True)
+
+      result = run("get", "configmap", "team-code", "-o", "json")
+
+      if result.returncode != 0:
+          print("Cannot read ConfigMap:", result.stderr.strip())
+      else:
+          cm = json.loads(result.stdout)
+          keys = sorted(
+              set(cm.get("binaryData", {}))
+              | set(cm.get("data", {}))
+          )
+          print("team-code keys:", keys)
+          print(
+              "promiseops.zip exists in ConfigMap:",
+              "promiseops.zip" in keys,
+          )
+
+      print("\n=== 2. Pod volume mounts ===", flush=True)
+
+      result = run("get", "pods", "-o", "json")
+      if result.returncode != 0:
+          print("Cannot list pods:", result.stderr.strip())
+          raise SystemExit(0)
+
+      pods = json.loads(result.stdout).get("items", [])
+      airflow_targets = []
+
+      for pod in pods:
+          name = pod["metadata"]["name"]
+          spec = pod.get("spec", {})
+          labels = pod["metadata"].get("labels", {})
+
+          volumes = {
+              v["name"]: v.get("configMap", {}).get("name")
+              for v in spec.get("volumes", [])
+          }
+
+          containers = spec.get("containers", [])
+
+          is_airflow = (
+              "airflow" in name.lower()
+              or any(
+                  "airflow" in str(v).lower()
+                  for v in labels.values()
+              )
+              or any(
+                  "/opt/airflow" in m.get("mountPath", "")
+                  for c in containers
+                  for m in c.get("volumeMounts", [])
+              )
+          )
+
+          phase = pod.get("status", {}).get("phase", "?")
+          print(f"Pod {name}: {phase}; airflow={is_airflow}")
+
+          if not is_airflow:
+              continue
+
+          for container in containers:
+              container_name = container["name"]
+              print(f"  Container: {container_name}")
+
+              for mount in container.get("volumeMounts", []):
+                  cm_name = volumes.get(mount["name"])
+
+                  if (
+                      cm_name in ("team-code", "team-dags")
+                      or "/opt/airflow" in mount.get("mountPath", "")
+                  ):
+                      print(
+                          "   Mount:", mount["mountPath"],
+                          "volume:", mount["name"],
+                          "ConfigMap:", cm_name or "(not a ConfigMap)",
+                          "subPath:", mount.get("subPath", "(none)"),
+                      )
+
+              if phase == "Running":
+                  airflow_targets.append(
+                      (name, container_name)
+                  )
+
+      print(
+          "\n=== 3. Actual file existence inside Airflow containers ===",
+          flush=True,
+      )
+
+      access = subprocess.run(
+          [
+              "kubectl", "auth", "can-i",
+              "create", "pods/exec", "-n", ns,
+          ],
+          capture_output=True,
+          text=True,
+          check=False,
+      )
+
+      if access.returncode != 0 or access.stdout.strip() != "yes":
+          print(
+              "pods/exec is not permitted; "
+              "PodSpec results above remain useful."
+          )
+      else:
+          for pod_name, container_name in airflow_targets:
+              print(
+                  f"Checking {pod_name}/{container_name}:",
+                  flush=True,
+              )
+
+              check = run(
+                  "exec", pod_name,
+                  "-c", container_name,
+                  "--", "sh", "-c",
+                  'for p in '
+                  '/opt/airflow/team-code/promiseops.zip '
+                  '/opt/airflow/dags/promiseops.zip; do '
+                  'if test -f "$p"; then '
+                  'echo "FOUND $p"; '
+                  'else echo "MISSING $p"; '
+                  'fi; done',
+              )
+
+              if check.returncode == 0:
+                  print(check.stdout.strip())
+              else:
+                  print(
+                      "Cannot exec:",
+                      check.stderr.strip(),
+                  )
+      PY
+
+
 # Build success establishes a deployable image, not a working model or passing SLO.
 # Add reviewed model packaging, staging acceptance, and manually approved production
 # promotion with digest pinning and rollback as described in deploy/README.md.
