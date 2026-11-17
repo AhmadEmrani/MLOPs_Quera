@@ -12,7 +12,7 @@ from airflow.sdk import Param, dag, task
 
 
 # ZIP package delivered through the team-code ConfigMap.
-_PROMISEOPS_ZIP = "/opt/airflow/team-code/promiseops.zip"
+_PROMISEOPS_ZIP = "/opt/airflow/dags/promiseops.zip"
 
 if _PROMISEOPS_ZIP not in sys.path:
     sys.path.insert(0, _PROMISEOPS_ZIP)
@@ -102,7 +102,7 @@ def promiseops_ingestion():
             "/opt/airflow/dags/ingestion.py",
             "/opt/airflow/dags/training.py",
             "/opt/airflow/dags/promiseops.zip",
-            "/opt/airflow/team-code/promiseops.zip",
+            "/opt/airflow/dags/promiseops.zip",
         )
 
         for filename in files_to_check:
@@ -133,7 +133,7 @@ def promiseops_ingestion():
         # =====================================================
 
         archive_path = Path(
-            "/opt/airflow/team-code/promiseops.zip"
+            "/opt/airflow/dags/promiseops.zip"
         )
 
         if not archive_path.is_file():
@@ -216,7 +216,7 @@ def promiseops_ingestion():
         # =====================================================
 
         archive_path = Path(
-            "/opt/airflow/team-code/promiseops.zip"
+           "/opt/airflow/dags/promiseops.zip"
         )
 
         if not archive_path.is_file():
