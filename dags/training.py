@@ -24,8 +24,8 @@ _JOBS_NAMESPACE = "g02-jobs"
     catchup=False,
     max_active_runs=1,
     params={
-        "worker_image": Param("", type="string", description="Own worker image pinned by @sha256 digest"),
-        "source_commit": Param("", type="string", description="Full 40-character lowercase source commit SHA"),
+        "worker_image": Param("", type="string", description="Optional: own worker image pinned by @sha256; empty uses synced CI build"),
+        "source_commit": Param("", type="string", description="Optional: full source SHA; empty uses synced CI build"),
         "train_end": Param("", type="string", description="Timezone-aware training cutoff"),
         "validation_end": Param("", type="string", description="Timezone-aware validation cutoff"),
         "as_of": Param("", type="string", description="Timezone-aware data and label availability cutoff"),
@@ -44,7 +44,10 @@ def promiseops_training():
 
         context = get_current_context()
         params = context["params"]
-        required = ("worker_image", "source_commit", "train_end", "validation_end", "as_of")
+        # Cutoffs remain team-selected. The worker identity may be supplied as
+        # an explicit pair for a historical replay, or loaded from the
+        # immutable image metadata published by the same GitLab pipeline.
+        required = ("train_end", "validation_end", "as_of")
         missing = [
             name for name in required
             if not isinstance(params.get(name), str) or not params[name].strip()
@@ -52,8 +55,37 @@ def promiseops_training():
         if missing:
             raise ValueError(f"Set required training parameters: {', '.join(missing)}")
 
-        worker_image = params["worker_image"].strip()
-        source_commit = params["source_commit"].strip()
+        worker_image = params.get("worker_image", "")
+        source_commit = params.get("source_commit", "")
+        if not isinstance(worker_image, str) or not isinstance(source_commit, str):
+            raise ValueError("worker_image and source_commit must be strings")
+        worker_image = worker_image.strip()
+        source_commit = source_commit.strip()
+
+        if bool(worker_image) != bool(source_commit):
+            raise ValueError(
+                "Provide BOTH worker_image and source_commit, or leave BOTH empty "
+                "to use the worker image published by GitLab CI"
+            )
+        if not worker_image:
+            from pathlib import Path
+
+            release_file = Path("/opt/airflow/dags/worker-release.json")
+            try:
+                metadata = json.loads(release_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise ValueError(
+                    "Worker build metadata is unavailable or invalid at "
+                    f"{release_file}; run build-worker-image, then sync-airflow"
+                ) from exc
+            if not isinstance(metadata, dict):
+                raise ValueError("worker-release.json must contain a JSON object")
+            worker_image = metadata.get("worker_image", "")
+            source_commit = metadata.get("source_commit", "")
+            if not isinstance(worker_image, str) or not isinstance(source_commit, str):
+                raise ValueError("Invalid worker_image/source_commit in worker-release.json")
+            LOGGER.info("Using worker image and source commit from %s", release_file)
+
         if not _IMAGE_DIGEST_PATTERN.fullmatch(worker_image):
             raise ValueError("worker_image must end in @sha256:<64 lowercase hex>")
         if not _COMMIT_PATTERN.fullmatch(source_commit):

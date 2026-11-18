@@ -1,9 +1,13 @@
+# This sync intentionally keeps promiseops.zip alongside DAGs because
+# /opt/airflow/dags/promiseops.zip is present in real Airflow task execution.
 sync-airflow:
   stage: sync
   needs:
     - job: contracts
       artifacts: false
     - job: package-airflow
+      artifacts: true
+    - job: build-worker-image
       artifacts: true
   resource_group: airflow-sync
   rules:
@@ -18,6 +22,35 @@ sync-airflow:
       test -f dist/airflow/ingestion.py
       test -f dist/airflow/training.py
       test -f dist/airflow/config_probe.py
+      test -f worker-build.json
+
+      # Build identity and worker digest come from this very pipeline.
+      # Never use a moving image tag or a digest guessed from another run.
+      python - <<'PYWORKER'
+      import json
+      import os
+      import re
+      from pathlib import Path
+
+      metadata = json.loads(Path("worker-build.json").read_text(encoding="utf-8"))
+      digest = metadata.get("containerimage.digest")
+      if not isinstance(digest, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+          raise SystemExit("worker-build.json has no valid image digest")
+
+      commit = os.environ["CI_COMMIT_SHA"]
+      if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+          raise SystemExit("CI_COMMIT_SHA is not a full Git SHA")
+
+      image_root = os.environ["CI_REGISTRY_IMAGE"].rstrip("/")
+      worker_identity = {
+          "schema_version": 1,
+          "worker_image": f"{image_root}/worker@{digest}",
+          "source_commit": commit,
+      }
+      output = Path("dist/airflow/worker-release.json")
+      output.write_text(json.dumps(worker_identity, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+      print(f"Pinned training worker metadata for commit {commit}")
+      PYWORKER
 
       kubectl get configmap team-code team-dags \
         -n "$TEAM-platform" -o name
@@ -34,6 +67,7 @@ sync-airflow:
         --from-file=training.py=dist/airflow/training.py \
         --from-file=config_probe.py=dist/airflow/config_probe.py \
         --from-file=promiseops.zip=dist/airflow/promiseops.zip \
+        --from-file=worker-release.json=dist/airflow/worker-release.json \
         --dry-run=client -o yaml \
         > dist/airflow/team-dags.yaml
 
@@ -51,4 +85,4 @@ sync-airflow:
         --overwrite
 
       echo "Airflow ConfigMaps synced from commit $CI_COMMIT_SHA"
-      echo "Next: manually trigger promiseops_config_probe (no data writes)."
+      echo "Worker metadata synced. Training now accepts empty worker_image/source_commit."
