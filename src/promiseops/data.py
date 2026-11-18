@@ -448,9 +448,14 @@ def ingest_batch(connection, payload, *, as_of, expected_sha256=None):
             "status": "committed",
         }
 
-    except (ValueError, TypeError, KeyError, Exception) as exc:  # noqa: BLE001
-        # اگر هر خطایی (مثل نبود کلید خارجی یا تغییر داده) رخ داد، همه چیز را برگردان و قرنطینه کن
+    except (ValueError, TypeError, KeyError, psycopg.IntegrityError) as exc:
+        # Invalid/immutable data or database integrity violations are quarantined.
         _quarantine_and_raise(raw_conn, batch.batch_id, actual_sha256, str(exc), raw_text)
+    except Exception:
+        # Connection outages, timeouts and other infrastructure errors are
+        # retryable; do not misclassify them as invalid data or quarantine them.
+        raw_conn.rollback()
+        raise
 
 
 FEATURE_COLUMNS = [
@@ -645,7 +650,11 @@ def get_connection(db_url: str | None = None):
     if not url:
         raise RuntimeError("PROMISEOPS_DATABASE_URL is not configured")
     # SQLAlchemy گاهی اول آدرس postgresql+psycopg:// می‌گذارد که برای psycopg خالص تمیزش می‌کنیم
-    clean_url = url.replace("postgresql+psycopg://", "postgresql://")
+    clean_url = (
+        "postgresql://" + url[len("postgresql+psycopg://"):]
+        if url.startswith("postgresql+psycopg://")
+        else url
+    )
     return psycopg.connect(clean_url)
 
 
@@ -738,8 +747,22 @@ def sync_feed(connection, *, base_url: str, token: str, as_of: str | datetime | 
         resp.raise_for_status()
         feed_data = resp.json()
 
-        entries = feed_data.get("entries", feed_data if isinstance(feed_data, list) else [])
-        effective_as_of = feed_data.get("as_of", as_of) if isinstance(feed_data, dict) else as_of
+        if isinstance(feed_data, dict):
+            entries = feed_data.get("entries")
+            effective_as_of = feed_data.get("as_of") or as_of
+        elif isinstance(feed_data, list):
+            entries = feed_data
+            effective_as_of = as_of
+        else:
+            raise ValueError("Feed manifest must be a JSON object or list")
+
+        if not isinstance(entries, list):
+            raise ValueError("Feed manifest must contain an entries list")
+        if as_of is not None and effective_as_of is not None:
+            if instant(effective_as_of) != instant(as_of):
+                raise ValueError("Feed manifest echoed a different as_of cutoff")
+        if any(not isinstance(entry, dict) for entry in entries):
+            raise ValueError("Feed manifest entries must be JSON objects")
 
         # مرتب‌سازی طبق قرارداد: اول زمان انتشار، و در زمان برابر اول orders (0) بعد outcomes (1)
         def _sort_key(entry: dict):
@@ -751,8 +774,17 @@ def sync_feed(connection, *, base_url: str, token: str, as_of: str | datetime | 
         receipts = []
 
         for entry in sorted_entries:
+            expected_payload_sha = entry.get("payload_sha256")
+            if (
+                not isinstance(expected_payload_sha, str)
+                or len(expected_payload_sha) != 64
+                or any(c not in "0123456789abcdef" for c in expected_payload_sha)
+            ):
+                raise ValueError("Feed manifest entry lacks valid payload_sha256")
             file_name = entry.get("file") or entry.get("path") or entry.get("batch_id")
-            file_resp = client.get(f"/feed/{str(file_name).lstrip('/')}")
+            if not isinstance(file_name, str) or not file_name.strip():
+                raise ValueError("Feed manifest entry has no batch file identifier")
+            file_resp = client.get(f"/feed/{file_name.lstrip('/')}")
             file_resp.raise_for_status()
             raw_bytes = file_resp.content
 
@@ -774,7 +806,7 @@ def sync_feed(connection, *, base_url: str, token: str, as_of: str | datetime | 
                 connection,
                 raw_bytes,
                 as_of=effective_as_of or entry["available_at"],
-                expected_sha256=entry.get("payload_sha256"),
+                expected_sha256=expected_payload_sha,
             )
             receipts.append(receipt)
 
