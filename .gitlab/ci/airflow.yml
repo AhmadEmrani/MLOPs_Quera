@@ -1,0 +1,54 @@
+sync-airflow:
+  stage: sync
+  needs:
+    - job: contracts
+      artifacts: false
+    - job: package-airflow
+      artifacts: true
+  resource_group: airflow-sync
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: false
+  script:
+    - |
+      set -eu
+      test "${TEAM:-}" = "g02"
+      test -f dist/airflow/promiseops.zip
+      test -f dist/airflow/ingestion.py
+      test -f dist/airflow/training.py
+      test -f dist/airflow/config_probe.py
+
+      kubectl get configmap team-code team-dags \
+        -n "$TEAM-platform" -o name
+
+      kubectl create configmap team-code \
+        -n "$TEAM-platform" \
+        --from-file=promiseops.zip=dist/airflow/promiseops.zip \
+        --dry-run=client -o yaml \
+        > dist/airflow/team-code.yaml
+
+      kubectl create configmap team-dags \
+        -n "$TEAM-platform" \
+        --from-file=ingestion.py=dist/airflow/ingestion.py \
+        --from-file=training.py=dist/airflow/training.py \
+        --from-file=config_probe.py=dist/airflow/config_probe.py \
+        --from-file=promiseops.zip=dist/airflow/promiseops.zip \
+        --dry-run=client -o yaml \
+        > dist/airflow/team-dags.yaml
+
+      kubectl apply -f dist/airflow/team-code.yaml
+      kubectl apply -f dist/airflow/team-dags.yaml
+
+      kubectl annotate configmap team-code \
+        -n "$TEAM-platform" \
+        promiseops.git-commit="$CI_COMMIT_SHA" \
+        --overwrite
+
+      kubectl annotate configmap team-dags \
+        -n "$TEAM-platform" \
+        promiseops.git-commit="$CI_COMMIT_SHA" \
+        --overwrite
+
+      echo "Airflow ConfigMaps synced from commit $CI_COMMIT_SHA"
+      echo "Next: manually trigger promiseops_config_probe (no data writes)."
