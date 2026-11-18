@@ -13,7 +13,6 @@ LOGGER = logging.getLogger(__name__)
 _IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 _COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _JOB_NAME_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$|^[a-z0-9]$")
-_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _JOBS_NAMESPACE = "g02-jobs"
 
 
@@ -70,7 +69,7 @@ def promiseops_training():
         request_id = "train-" + hashlib.sha256(dag_run.run_id.encode("utf-8")).hexdigest()
 
         return {
-            "worker_image": worker_image,
+            "image": worker_image,  # Gateway contract: POST /training uses image, not worker_image
             "source_commit": source_commit,
             "train_end": cutoffs["train_end"].isoformat().replace("+00:00", "Z"),
             "validation_end": cutoffs["validation_end"].isoformat().replace("+00:00", "Z"),
@@ -108,62 +107,53 @@ def promiseops_training():
             response.raise_for_status()
             manifest = response.json()
 
-        if isinstance(manifest, dict):
-            entries = manifest.get("entries")
-            echoed_as_of = manifest.get("as_of")
-            if echoed_as_of is not None:
-                if not isinstance(echoed_as_of, str) or instant(echoed_as_of) != instant(as_of):
-                    raise AirflowFailException("Feed response as_of differs from training cutoff")
-        elif isinstance(manifest, list):
-            entries = manifest
-        else:
-            raise AirflowFailException("Feed manifest must be a JSON object or list")
+        # The gateway returns {schema_version, as_of, releases}. A release
+        # has no batch_id; identify its receipt via kind + publication time +
+        # payload checksum, all persisted by ingest_batch().
+        from promiseops.data import parse_feed_manifest
 
-        if not isinstance(entries, list) or not entries:
-            raise AirflowFailException("Feed returned no valid batch entries for as_of")
+        try:
+            entries = parse_feed_manifest(manifest, as_of=as_of)
+        except (TypeError, ValueError) as error:
+            raise AirflowFailException(f"Invalid feed manifest: {error}") from error
+        if not entries:
+            raise AirflowFailException("Feed returned no releases for training as_of")
 
-        expected_hashes: dict[str, str] = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise AirflowFailException("Feed manifest contains an invalid entry")
-            batch_id = entry.get("batch_id")
-            payload_sha256 = entry.get("payload_sha256")
-            if (
-                not isinstance(batch_id, str) or not batch_id
-                or not isinstance(payload_sha256, str)
-                or not _SHA256_PATTERN.fullmatch(payload_sha256)
-            ):
-                raise AirflowFailException("Feed entries must contain batch_id and SHA256 checksum")
-            if batch_id in expected_hashes:
-                raise AirflowFailException(f"Feed manifest repeats batch ID {batch_id!r}")
-            expected_hashes[batch_id] = payload_sha256
+        expected: list[tuple[str, object, str]] = [
+            (entry["kind"], instant(entry["available_at"]), entry["payload_sha256"])
+            for entry in entries
+        ]
+        if len(set(expected)) != len(expected):
+            raise AirflowFailException("Feed manifest repeats a release identity")
 
         connection = open_database_connection()
         try:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "SELECT batch_id, payload_sha256 FROM batch_receipts WHERE batch_id = ANY(%s)",
-                    (list(expected_hashes),),
+                    """SELECT kind, available_at, payload_sha256
+                       FROM batch_receipts WHERE available_at <= %s""",
+                    (instant(as_of),),
                 )
-                stored_hashes = {
-                    batch_id: payload_hash.strip()
-                    for batch_id, payload_hash in cursor.fetchall()
-                }
+                receipt_rows = cursor.fetchall()
         finally:
             connection.close()
 
-        missing = sorted(set(expected_hashes) - set(stored_hashes))
-        mismatched = sorted(
-            batch_id for batch_id, expected in expected_hashes.items()
-            if batch_id in stored_hashes and stored_hashes[batch_id] != expected
-        )
-        if missing or mismatched:
+        stored = {
+            (kind, instant(available_at), payload_hash.strip())
+            for kind, available_at, payload_hash in receipt_rows
+        }
+        missing = [
+            (kind, date.isoformat()) for kind, date, checksum in expected
+            if (kind, date, checksum) not in stored
+        ]
+        if missing:
             raise AirflowFailException(
                 "Ingestion incomplete for training cutoff: "
-                f"missing_batches={missing[:20]}, checksum_mismatches={mismatched[:20]}"
+                f"missing_or_mismatched_releases={missing[:20]} "
+                f"(total={len(missing)})"
             )
 
-        summary = {"as_of": as_of, "verified_batch_count": len(expected_hashes)}
+        summary = {"as_of": as_of, "verified_batch_count": len(expected)}
         LOGGER.info("Verified ingested feed snapshot: %s", json.dumps(summary, sort_keys=True))
         return summary
 

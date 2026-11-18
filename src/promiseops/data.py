@@ -10,7 +10,6 @@ from typing import Any
 import httpx
 import pandas as pd
 import psycopg
-import logging
 
 from promiseops.contracts import LOCAL_TZ, Batch, digest, instant
 
@@ -731,6 +730,74 @@ def get_or_save_prediction(
         }
 
 
+def parse_feed_manifest(manifest: Any, *, as_of: str | datetime | None = None) -> list[dict]:
+    """Validate the gateway feed inventory, preserving its release metadata.
+
+    The deployed company gateway returns {schema_version, as_of, releases}.
+    Older test fixtures may use {entries: [...]} or a bare list. A release
+    describes a downloadable file; the batch_id belongs to that file's JSON
+    envelope and is intentionally NOT required in the manifest.
+    """
+    if isinstance(manifest, dict):
+        if "releases" in manifest and "entries" in manifest:
+            raise ValueError("Feed manifest contains ambiguous releases and entries lists")
+        if "releases" in manifest:
+            entries = manifest["releases"]
+        elif "entries" in manifest:
+            entries = manifest["entries"]
+        else:
+            raise ValueError("Feed manifest has no releases list")
+        echoed_as_of = manifest.get("as_of")
+        if as_of is not None and echoed_as_of is not None:
+            if instant(echoed_as_of) != instant(as_of):
+                raise ValueError("Feed manifest echoed a different as_of cutoff")
+    elif isinstance(manifest, list):
+        entries = manifest
+    else:
+        raise ValueError("Feed manifest must be a JSON object or list")
+
+    if not isinstance(entries, list):
+        raise ValueError("Feed manifest must contain a releases/entries list")
+
+    seen_files: set[str] = set()
+    cutoff = instant(as_of) if as_of is not None else None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("Feed manifest releases must be JSON objects")
+
+        file_name = entry.get("file") or entry.get("path") or entry.get("batch_id")
+        if not isinstance(file_name, str) or not file_name.strip():
+            raise ValueError("Feed manifest release has no file identifier")
+        # Manifest files are names under /feed, never arbitrary URLs or paths.
+        if (file_name.startswith("/") or "\\" in file_name or ".." in file_name.split("/")
+                or "?" in file_name or "#" in file_name or "://" in file_name):
+            raise ValueError("Feed manifest contains an unsafe file identifier")
+        if file_name in seen_files:
+            raise ValueError("Feed manifest repeats a file identifier")
+        seen_files.add(file_name)
+
+        if entry.get("kind") not in ("orders", "outcomes"):
+            raise ValueError("Feed manifest release has invalid kind")
+        if not isinstance(entry.get("available_at"), str):
+            raise ValueError("Feed manifest release has invalid available_at")
+        available_at = instant(entry["available_at"])
+        if cutoff is not None and available_at > cutoff:
+            raise ValueError("Feed manifest includes a release after as_of")
+
+        payload_sha = entry.get("payload_sha256")
+        if (not isinstance(payload_sha, str) or len(payload_sha) != 64
+                or any(char not in "0123456789abcdef" for char in payload_sha)):
+            raise ValueError("Feed manifest release lacks valid payload_sha256")
+        file_sha = entry.get("file_sha256")
+        if file_sha is not None and (
+            not isinstance(file_sha, str) or len(file_sha) != 64
+            or any(char not in "0123456789abcdef" for char in file_sha)
+        ):
+            raise ValueError("Feed manifest release has invalid file_sha256")
+
+    return entries
+
+
 def sync_feed(connection, *, base_url: str, token: str, as_of: str | datetime | None = None) -> list[dict]:
     """
     دریافت لیست دسته‌های داده (Batches) از سرور شرکت (GET /feed)،
@@ -748,73 +815,18 @@ def sync_feed(connection, *, base_url: str, token: str, as_of: str | datetime | 
         resp.raise_for_status()
         feed_data = resp.json()
 
-        # TEMPORARY: inspect the feed response structure only.
-        # Never log the raw response, token, or batch contents.
-        log = logging.getLogger("promiseops.feed_shape")
-
-        log.warning(
-            "FEED_SHAPE status=%s content_type=%s root_type=%s",
-            resp.status_code,
-            resp.headers.get("content-type"),
-            type(feed_data).__name__,
-        )
-
+        # The real G02 gateway uses "releases" (not "entries") and does not
+        # include batch_id in these inventory rows. The batch file does.
+        entries = parse_feed_manifest(feed_data, as_of=as_of)
+        effective_as_of = as_of
         if isinstance(feed_data, dict):
-            log.warning(
-                "FEED_SHAPE top_level_keys=%s",
-                sorted(str(key) for key in feed_data.keys())[:30],
-            )
-
-            for key, value in list(feed_data.items())[:20]:
-                log.warning(
-                    "FEED_SHAPE field=%s type=%s",
-                    key,
-                    type(value).__name__,
-                )
-
-                if isinstance(value, list):
-                    log.warning(
-                        "FEED_SHAPE field=%s list_length=%s",
-                        key,
-                        len(value),
-                    )
-
-                    if value and isinstance(value[0], dict):
-                        log.warning(
-                            "FEED_SHAPE field=%s first_item_keys=%s",
-                            key,
-                            sorted(str(k) for k in value[0])[:30],
-                        )
-
-                elif isinstance(value, dict):
-                    log.warning(
-                        "FEED_SHAPE field=%s nested_keys=%s",
-                        key,
-                        sorted(str(k) for k in value)[:30],
-                    )
-
-        if isinstance(feed_data, dict):
-            entries = feed_data.get("entries")
             effective_as_of = feed_data.get("as_of") or as_of
-        elif isinstance(feed_data, list):
-            entries = feed_data
-            effective_as_of = as_of
-        else:
-            raise ValueError("Feed manifest must be a JSON object or list")
-
-        if not isinstance(entries, list):
-            raise ValueError("Feed manifest must contain an entries list")
-        if as_of is not None and effective_as_of is not None:
-            if instant(effective_as_of) != instant(as_of):
-                raise ValueError("Feed manifest echoed a different as_of cutoff")
-        if any(not isinstance(entry, dict) for entry in entries):
-            raise ValueError("Feed manifest entries must be JSON objects")
 
         # مرتب‌سازی طبق قرارداد: اول زمان انتشار، و در زمان برابر اول orders (0) بعد outcomes (1)
         def _sort_key(entry: dict):
             avail = instant(entry["available_at"])
             kind_rank = 0 if entry.get("kind") == "orders" else 1
-            return (avail, kind_rank, entry.get("batch_id", ""))
+            return (avail, kind_rank, entry.get("file") or entry.get("path") or entry.get("batch_id", ""))
 
         sorted_entries = sorted(entries, key=_sort_key)
         receipts = []
