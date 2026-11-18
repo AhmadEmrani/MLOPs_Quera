@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 import pandas as pd
 import psycopg
+import logging
 
 from promiseops.contracts import LOCAL_TZ, Batch, digest, instant
 
