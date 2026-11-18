@@ -1,0 +1,20 @@
+inspect-own-namespaces:
+  needs: []
+  stage: inspect
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - for area in staging prod; do kubectl get pods,deployments,jobs -n "$TEAM-$area"; done
+    - kubectl get pods,jobs -n "$TEAM-jobs"
+
+inspect-ci-config-presence:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - python ci/inspect_ci_config.py

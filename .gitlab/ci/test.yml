@@ -1,0 +1,17 @@
+contracts:
+  stage: test
+  script:
+    - cp -a /opt/promiseops/wheelhouse ./wheelhouse
+    - uv venv --python /usr/local/bin/python .venv
+    - uv pip sync --python .venv/bin/python --no-index --find-links wheelhouse --require-hashes requirements.lock
+    - uv pip install --python .venv/bin/python --no-index --no-deps --no-build-isolation .
+    - .venv/bin/python -m pytest -q
+
+package-airflow:
+  stage: test
+  script:
+    - python ci/package_airflow.py
+  artifacts:
+    paths:
+      - dist/airflow/
+    expire_in: 7 days

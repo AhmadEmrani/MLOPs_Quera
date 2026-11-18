@@ -1,0 +1,71 @@
+build-own-image:
+  stage: build
+  resource_group: image-build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - cp -a /opt/promiseops/wheelhouse ./wheelhouse
+    - mkdir -p "$HOME/.docker"
+    - python ci/registry_login.py
+    - buildctl --addr "$BUILDKIT_ADDR" --tlsservername "$BUILDKIT_SERVER_NAME" --tlscacert "$BUILDKIT_CA" --tlscert "$BUILDKIT_CERT" --tlskey "$BUILDKIT_KEY" build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt build-arg:BASE_IMAGE="$BASE_IMAGE" --opt build-arg:UV_IMAGE="$UV_IMAGE" --output type=image,name="$CI_REGISTRY_IMAGE/app:$CI_COMMIT_SHA",push=true --metadata-file build.json
+    - python -c 'import json; assert json.load(open("build.json"))["containerimage.digest"].startswith("sha256:")'
+  artifacts:
+    paths: [build.json]
+
+build-worker-image:
+  stage: build
+  needs:
+    - job: build-own-image
+      artifacts: true
+  resource_group: image-build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - |
+      set -eu
+      test -f Dockerfile.worker
+      test -f requirements-tracking.lock
+      test -d /opt/promiseops/tracking-wheelhouse
+
+      cp -a /opt/promiseops/tracking-wheelhouse ./tracking-wheelhouse
+      mkdir -p "$HOME/.docker"
+      python ci/registry_login.py
+
+      APP_DIGEST="$(python - <<'PY'
+      import json
+      import re
+      with open("build.json", encoding="utf-8") as handle:
+          digest = json.load(handle)["containerimage.digest"]
+      if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+          raise SystemExit("build.json does not contain a valid app image digest")
+      print(digest)
+      PY
+      )"
+
+      buildctl \
+        --addr "$BUILDKIT_ADDR" \
+        --tlsservername "$BUILDKIT_SERVER_NAME" \
+        --tlscacert "$BUILDKIT_CA" \
+        --tlscert "$BUILDKIT_CERT" \
+        --tlskey "$BUILDKIT_KEY" \
+        build --frontend dockerfile.v0 \
+        --local context=. --local dockerfile=. \
+        --opt filename=Dockerfile.worker \
+        --opt build-arg:APP_IMAGE="$CI_REGISTRY_IMAGE/app@$APP_DIGEST" \
+        --opt build-arg:UV_IMAGE="$UV_IMAGE" \
+        --output type=image,name="$CI_REGISTRY_IMAGE/worker:$CI_COMMIT_SHA",push=true \
+        --metadata-file worker-build.json
+
+      python - <<'PY'
+      import json
+      import re
+      with open("worker-build.json", encoding="utf-8") as handle:
+          digest = json.load(handle)["containerimage.digest"]
+      if re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None:
+          raise SystemExit("worker-build.json does not contain a valid worker image digest")
+      print(f"Worker image digest: {digest}")
+      PY
+
+  artifacts:
+    paths: [worker-build.json]
+    expire_in: 14 days
