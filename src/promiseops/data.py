@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 import pandas as pd
 import psycopg
+import logging
 
 from promiseops.contracts import LOCAL_TZ, Batch, digest, instant
 
@@ -746,6 +747,51 @@ def sync_feed(connection, *, base_url: str, token: str, as_of: str | datetime | 
         resp = client.get("/feed", params=params)
         resp.raise_for_status()
         feed_data = resp.json()
+
+        # TEMPORARY: inspect the feed response structure only.
+        # Never log the raw response, token, or batch contents.
+        log = logging.getLogger("promiseops.feed_shape")
+
+        log.warning(
+            "FEED_SHAPE status=%s content_type=%s root_type=%s",
+            resp.status_code,
+            resp.headers.get("content-type"),
+            type(feed_data).__name__,
+        )
+
+        if isinstance(feed_data, dict):
+            log.warning(
+                "FEED_SHAPE top_level_keys=%s",
+                sorted(str(key) for key in feed_data.keys())[:30],
+            )
+
+            for key, value in list(feed_data.items())[:20]:
+                log.warning(
+                    "FEED_SHAPE field=%s type=%s",
+                    key,
+                    type(value).__name__,
+                )
+
+                if isinstance(value, list):
+                    log.warning(
+                        "FEED_SHAPE field=%s list_length=%s",
+                        key,
+                        len(value),
+                    )
+
+                    if value and isinstance(value[0], dict):
+                        log.warning(
+                            "FEED_SHAPE field=%s first_item_keys=%s",
+                            key,
+                            sorted(str(k) for k in value[0])[:30],
+                        )
+
+                elif isinstance(value, dict):
+                    log.warning(
+                        "FEED_SHAPE field=%s nested_keys=%s",
+                        key,
+                        sorted(str(k) for k in value)[:30],
+                    )
 
         if isinstance(feed_data, dict):
             entries = feed_data.get("entries")
