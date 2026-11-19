@@ -22,6 +22,7 @@ sync-airflow:
       test -f dist/airflow/ingestion.py
       test -f dist/airflow/training.py
       test -f dist/airflow/config_probe.py
+      test -f dist/airflow/kube_access_probe.py
       test -f worker-build.json
 
       # Build identity and worker digest come from this very pipeline.
@@ -66,6 +67,7 @@ sync-airflow:
         --from-file=ingestion.py=dist/airflow/ingestion.py \
         --from-file=training.py=dist/airflow/training.py \
         --from-file=config_probe.py=dist/airflow/config_probe.py \
+        --from-file=kube_access_probe.py=dist/airflow/kube_access_probe.py \
         --from-file=promiseops.zip=dist/airflow/promiseops.zip \
         --from-file=worker-release.json=dist/airflow/worker-release.json \
         --dry-run=client -o yaml \
