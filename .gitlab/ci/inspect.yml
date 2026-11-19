@@ -31,7 +31,9 @@ inspect-training-failure:
       set -eu
 
       NAMESPACE="g02-jobs"
-      JOB_NAME="train-8fd240615117a8cc983b38d4"
+      JOB_NAME="${TRAIN_JOB_NAME:?Set TRAIN_JOB_NAME when running this job}"
+
+      echo "=== SELECTED TRAINING JOB: $JOB_NAME ==="
 
       echo "=== TRAINING JOB ==="
       kubectl get job "$JOB_NAME" \
@@ -56,6 +58,11 @@ inspect-training-failure:
         -n "$NAMESPACE" \
         -l "batch.kubernetes.io/job-name=$JOB_NAME" \
         -o jsonpath='{.items[*].metadata.name}')"
+
+      if [ -z "$PODS" ]; then
+        echo "No pods found for job: $JOB_NAME"
+        exit 0
+      fi
 
       for POD in $PODS; do
         echo "=== POD: $POD ==="
