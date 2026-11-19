@@ -1,4 +1,4 @@
-"""Validation metrics and candidate quality gates."""
+"""Validation metrics and recall-first candidate quality gates."""
 
 from __future__ import annotations
 
@@ -10,8 +10,12 @@ from typing import Any
 from promiseops.metrics import cohort_hash, evaluate
 
 
+# Diagnostic tolerances only. These do NOT veto a candidate that satisfies
+# the primary recall@10% gate. The model-selection code evaluates AP/Brier as
+# tie-breakers on a common validation cohort.
 MAX_AP_DROP = 0.02
 MAX_BRIER_WORSENING = 0.005
+_EPSILON = 1e-12
 
 
 @dataclass(frozen=True)
@@ -59,11 +63,16 @@ def compare_candidate(
     candidate: CandidateEvaluation,
     reference: CandidateEvaluation,
 ) -> dict[str, Any]:
-    """Apply the public quality gates against a baseline or incumbent.
+    """Apply a recall-first gate against a baseline or incumbent.
 
-    Candidate and reference must represent the same validation order IDs.
-    Recall may not decrease, average precision may drop by at most 0.02, and
-    Brier score may worsen by at most 0.005. A failed gate is a valid result.
+    Recall@10% is the only metric that can veto a candidate here. AP drops
+    greater than 0.02 and Brier worsening greater than 0.005 are recorded as
+    warnings, not rejections. Ranking against champion/challenger remains in
+    model.py, comparing all models on the *same* validation cohort using
+    recall first, average precision second and Brier third.
+
+    A passing gate does NOT by itself authorize setting an MLflow alias,
+    deploying a model, or promoting a champion.
     """
     if set(candidate.order_ids) != set(reference.order_ids):
         raise ValueError("candidate and reference must use identical validation order IDs")
@@ -86,20 +95,43 @@ def compare_candidate(
     ):
         raise ValueError("candidate and reference metrics must be finite")
 
+    recall_change = (
+        float(candidate_metrics["recall_at_10pct"])
+        - float(reference_metrics["recall_at_10pct"])
+    )
+    ap_change = (
+        float(candidate_metrics["average_precision"])
+        - float(reference_metrics["average_precision"])
+    )
+    brier_change = (
+        float(candidate_metrics["brier"])
+        - float(reference_metrics["brier"])
+    )
+
+    # Hard gate: never accept lower recall@10%, allowing only negligible
+    # floating-point noise in otherwise equal metrics.
     reasons: list[str] = []
-    if candidate_metrics["recall_at_10pct"] < reference_metrics["recall_at_10pct"]:
+    if recall_change < -_EPSILON:
         reasons.append("recall_at_10pct_decreased")
-    if (
-        candidate_metrics["average_precision"]
-        < reference_metrics["average_precision"] - MAX_AP_DROP - 1e-12
-    ):
-        reasons.append("average_precision_dropped_by_more_than_0.02")
-    if candidate_metrics["brier"] > reference_metrics["brier"] + MAX_BRIER_WORSENING + 1e-12:
-        reasons.append("brier_worsened_by_more_than_0.005")
+
+    # AP and Brier remain visible for review/calibration work, but they must
+    # not silently take priority over the project's primary recall metric.
+    warnings: list[str] = []
+    if ap_change < -MAX_AP_DROP - _EPSILON:
+        warnings.append("average_precision_dropped_by_more_than_0.02")
+    if brier_change > MAX_BRIER_WORSENING + _EPSILON:
+        warnings.append("brier_worsened_by_more_than_0.005")
 
     return {
-        "promote": not reasons,
-        "reasons": reasons,
+        "promote": not reasons,  # Existing model.py interface: gate passed.
+        "reasons": reasons,      # Hard failures only.
+        "warnings": warnings,   # Diagnostic issues, never automatic vetoes.
+        "gate_policy": "recall_at_10pct_non_decreasing",
+        "comparison_deltas": {
+            "recall_at_10pct": recall_change,
+            "average_precision": ap_change,
+            "brier": brier_change,
+        },
         "candidate": candidate.model_name,
         "reference": reference.model_name,
         "cohort_hash": candidate.cohort_hash,
