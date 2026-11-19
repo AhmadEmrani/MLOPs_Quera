@@ -17,7 +17,12 @@ assert (package / "__init__.py").is_file(), (
     "src/promiseops/__init__.py not found"
 )
 
-for name in ("ingestion.py", "training.py", "config_probe.py"):
+for name in (
+    "ingestion.py",
+    "training.py",
+    "config_probe.py",
+    "kube_access_probe.py",
+):
     source = Path("dags") / name
 
     ast.parse(
