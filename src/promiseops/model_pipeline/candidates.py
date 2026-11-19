@@ -17,7 +17,7 @@ from promiseops.model_pipeline.preprocessing import build_pipeline, feature_matr
 def build_candidates(
     *,
     random_state: int = 42,
-    n_estimators: int = 250,
+    n_estimators: int = 280,
 ) -> dict[str, BaseEstimator]:
     """Build the prevalence baseline, Logistic Regression, and Random Forest.
 
@@ -34,6 +34,7 @@ def build_candidates(
                 solver="lbfgs",
                 max_iter=2000,
                 class_weight="balanced",
+                C=0.1,
             )
         ),
         "random_forest": build_pipeline(
@@ -42,7 +43,7 @@ def build_candidates(
                 min_samples_leaf=10,
                 random_state=random_state,
                 n_jobs=1,
-                class_weight="balanced",
+                class_weight="balanced_subsample",
                 max_depth=12,
                 
             )
