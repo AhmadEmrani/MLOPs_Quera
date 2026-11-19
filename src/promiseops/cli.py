@@ -1,12 +1,8 @@
-# def main():
-# raise NotImplementedError("Add your data, training, batch-scoring and serving commands")
-
 """Command line entry point: ``promiseops score-batch``."""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import os
@@ -18,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from promiseops.data import FEATURE_COLUMNS, build_features, get_connection
-from promiseops.metrics import cutoff
+from promiseops.metrics import cohort_hash, cutoff
 from promiseops.model_pipeline.bundle import load_bundle
 from promiseops.settings import DEFAULT_RELEASE_PATH
 
@@ -48,6 +44,12 @@ def _batch_id(text: str) -> str:
 
 
 def _cohort_ids(conn: Any, since: datetime, as_of: datetime) -> list[str]:
+    """Orders whose batch became available in (since, as_of].
+
+    Daily scoring passes the previous run's as_of as ``since``, so each order
+    is scored once, when its orders batch is released. Orders are scored at
+    approval time, so delivery is not required.
+    """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT order_id FROM orders WHERE batch_available_at > %s AND batch_available_at <= %s"
@@ -83,7 +85,7 @@ def score_batch(
     }
     if not ids:
         return result
-    result["cohort_hash"] = hashlib.sha256("\n".join(ids).encode()).hexdigest()
+    result["cohort_hash"] = cohort_hash(ids)
     classes = list(model.classes_)
     if 1 not in classes:
         raise ValueError("model has no positive class")

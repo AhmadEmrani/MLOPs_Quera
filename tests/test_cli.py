@@ -60,7 +60,7 @@ class FakeConn:
 
 
 class Env:
-    """Holds the fakes installed by ``setup`` so tests can inspect them."""
+    """Holds the fakes installed by ``install_fakes`` so tests can inspect them."""
 
     def __init__(self):
         self.conn = None
@@ -76,7 +76,7 @@ def env(monkeypatch):
     return Env()
 
 
-def setup(env, monkeypatch, ids, scores=None, *, model=None, release=RELEASE, drop=()):
+def install_fakes(env, monkeypatch, ids, scores=None, *, model=None, release=RELEASE, drop=()):
     env.conn = FakeConn(ids)
     env.model = model or FakeModel(scores)
 
@@ -102,7 +102,7 @@ def run(capsys, as_of=AS_OF, since=SINCE, batch_id="b1"):
 
 
 def test_empty_cohort(env, monkeypatch, capsys):
-    setup(env, monkeypatch, [])
+    install_fakes(env, monkeypatch, [])
     code, out, _ = run(capsys)
     result = json.loads(out)
     assert code == 0
@@ -115,12 +115,12 @@ def test_empty_cohort(env, monkeypatch, capsys):
 
 
 def test_empty_cohort_does_not_need_class_one(env, monkeypatch, capsys):
-    setup(env, monkeypatch, [], model=FakeModel(classes=(0, 2)))
+    install_fakes(env, monkeypatch, [], model=FakeModel(classes=(0, 2)))
     assert run(capsys)[0] == 0
 
 
 def test_single_order(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["ord-1"], {"ord-1": 0.82})
+    install_fakes(env, monkeypatch, ["ord-1"], {"ord-1": 0.82})
     code, out, err = run(capsys)
     result = json.loads(out)
     assert code == 0
@@ -135,25 +135,27 @@ def test_single_order(env, monkeypatch, capsys):
 def test_top_k(env, monkeypatch, capsys, n, k):
     ids = [f"ord-{i:03d}" for i in range(n)]
     scores = {o: 0.01 + i * 0.001 for i, o in enumerate(ids)}
-    setup(env, monkeypatch, ids, scores)
+    install_fakes(env, monkeypatch, ids, scores)
     code, out, _ = run(capsys)
     result = json.loads(out)
     assert code == 0
     assert result["scored_count"] == n
     assert result["top_k"] == k
-    assert [t["order_id"] for t in result["top"]] == ids[::-1][:k]
+    top_ids = [t["order_id"] for t in result["top"]]
+    assert top_ids == ids[::-1][:k]
+    assert set(top_ids) == set(ids[::-1][:k])
 
 
 def test_ties_sorted_by_order_id(env, monkeypatch, capsys):
     ids = ["ord-c", "ord-a", "ord-b"]
-    setup(env, monkeypatch, ids, {o: 0.7 for o in ids})
+    install_fakes(env, monkeypatch, ids, {o: 0.7 for o in ids})
     result = json.loads(run(capsys)[1])
     assert result["top"][0]["order_id"] == "ord-a"
 
 
 def test_same_input_same_output(env, monkeypatch, capsys):
     ids = [f"ord-{i:02d}" for i in range(15)]
-    setup(env, monkeypatch, ids)
+    install_fakes(env, monkeypatch, ids)
     first = run(capsys)[1]
     second = run(capsys)[1]
     assert first == second
@@ -162,7 +164,7 @@ def test_same_input_same_output(env, monkeypatch, capsys):
 def test_large_cohort_uses_chunks(env, monkeypatch, capsys):
     ids = [f"ord-{i:04d}" for i in range(1200)]
     scores = {o: i / 2000 for i, o in enumerate(ids)}
-    setup(env, monkeypatch, ids, scores)
+    install_fakes(env, monkeypatch, ids, scores)
     result = json.loads(run(capsys)[1])
     assert [len(c[0]) for c in env.feature_calls] == [500, 500, 200]
     assert result["top_k"] == 120
@@ -170,9 +172,9 @@ def test_large_cohort_uses_chunks(env, monkeypatch, capsys):
 
 
 def test_cohort_hash_depends_on_ids(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["a", "b"])
+    install_fakes(env, monkeypatch, ["a", "b"])
     first = json.loads(run(capsys)[1])["cohort_hash"]
-    setup(env, monkeypatch, ["a", "c"])
+    install_fakes(env, monkeypatch, ["a", "c"])
     second = json.loads(run(capsys)[1])["cohort_hash"]
     again = json.loads(run(capsys)[1])["cohort_hash"]
     assert first != second
@@ -180,7 +182,7 @@ def test_cohort_hash_depends_on_ids(env, monkeypatch, capsys):
 
 
 def test_query_window_and_feature_arguments(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["ord-1"])
+    install_fakes(env, monkeypatch, ["ord-1"])
     run(capsys, as_of="2025-01-10T16:00:00+03:30", since=SINCE)
     sql, params = env.conn.queries[0]
     assert "batch_available_at > %s" in sql
@@ -195,13 +197,13 @@ def test_query_window_and_feature_arguments(env, monkeypatch, capsys):
 
 
 def test_output_is_utc(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["ord-1"])
+    install_fakes(env, monkeypatch, ["ord-1"])
     result = json.loads(run(capsys, as_of="2025-01-10T16:00:00+03:30")[1])
     assert result["as_of"] == "2025-01-10T12:30:00+00:00"
 
 
 def test_output_is_single_json_line(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["ord-1"])
+    install_fakes(env, monkeypatch, ["ord-1"])
     _code, out, err = run(capsys)
     assert out.count("\n") == 1
     assert out.endswith("\n")
@@ -209,7 +211,7 @@ def test_output_is_single_json_line(env, monkeypatch, capsys):
 
 
 def test_missing_features_fail(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["a", "b", "c"], drop={"b"})
+    install_fakes(env, monkeypatch, ["a", "b", "c"], drop={"b"})
     code, out, err = run(capsys)
     assert code == 1
     assert out == ""
@@ -218,25 +220,25 @@ def test_missing_features_fail(env, monkeypatch, capsys):
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -0.1, 1.1])
 def test_bad_probability_fails(env, monkeypatch, capsys, bad):
-    setup(env, monkeypatch, ["a"], {"a": bad})
+    install_fakes(env, monkeypatch, ["a"], {"a": bad})
     code, out, _ = run(capsys)
     assert code == 1
     assert out == ""
 
 
 def test_model_without_positive_class_fails(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["a"], model=FakeModel(classes=(0, 2)))
+    install_fakes(env, monkeypatch, ["a"], model=FakeModel(classes=(0, 2)))
     assert run(capsys)[0] == 1
 
 
 @pytest.mark.parametrize("release", [{}, {"model_version": ""}, {"model_version": "  "}])
 def test_bad_model_version_fails(env, monkeypatch, capsys, release):
-    setup(env, monkeypatch, ["a"], release=release)
+    install_fakes(env, monkeypatch, ["a"], release=release)
     assert run(capsys)[0] == 1
 
 
 def test_missing_database_url(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["a"])
+    install_fakes(env, monkeypatch, ["a"])
     monkeypatch.delenv("PROMISEOPS_DATABASE_URL")
     code, out, err = run(capsys)
     assert code == 1
@@ -245,24 +247,24 @@ def test_missing_database_url(env, monkeypatch, capsys):
 
 
 def test_api_key_not_required(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["a"])
+    install_fakes(env, monkeypatch, ["a"])
     assert run(capsys)[0] == 0
 
 
 def test_connection_closed_on_error(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["a"], {"a": 5.0})
+    install_fakes(env, monkeypatch, ["a"], {"a": 5.0})
     assert run(capsys)[0] == 1
     assert env.conn.closed is True
 
 
 def test_connection_closed_on_success(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["a"])
+    install_fakes(env, monkeypatch, ["a"])
     run(capsys)
     assert env.conn.closed is True
 
 
 def test_connection_error_hides_password(env, monkeypatch, capsys):
-    setup(env, monkeypatch, ["a"])
+    install_fakes(env, monkeypatch, ["a"])
 
     def boom(url):
         raise RuntimeError(f"could not connect to {url}")
@@ -272,6 +274,7 @@ def test_connection_error_hides_password(env, monkeypatch, capsys):
     assert code == 1
     assert "RuntimeError" in err
     assert PASSWORD not in err
+    assert URL not in err
     assert PASSWORD not in out
 
 
@@ -307,3 +310,12 @@ def test_invalid_batch_id(env, bad):
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
+
+
+def test_release_dir_file_and_dir(tmp_path, monkeypatch):
+    f = tmp_path / "release.json"
+    f.write_text("{}")
+    monkeypatch.setenv("PROMISEOPS_RELEASE", str(f))
+    assert cli._release_dir() == tmp_path
+    monkeypatch.setenv("PROMISEOPS_RELEASE", str(tmp_path))
+    assert cli._release_dir() == tmp_path
