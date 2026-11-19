@@ -31,7 +31,13 @@ from promiseops.model_pipeline.evaluation import (
     evaluate_candidates,
 )
 from promiseops.model_pipeline.split import TemporalSplit, select_temporal_split
-from promiseops.model_pipeline.tracking import TrackingResult, log_run, prepare_tracking
+from promiseops.model_pipeline.tracking import (
+    TrackingResult,
+    finalize_model_registry,
+    load_registry_reference,
+    log_run,
+    prepare_tracking,
+)
 from promiseops.model_pipeline.validation import FEATURE_COLUMNS, LabeledFeatureRow, validate_feature_rows
 
 
@@ -168,10 +174,11 @@ def _select_candidate(
     evaluations: dict[str, CandidateEvaluation],
     decisions: dict[str, dict[str, Any]],
 ) -> str | None:
+    # Include future candidate names without silently excluding them from selection.
     passing = [
         name
-        for name in ("logistic_regression", "random_forest")
-        if decisions[name]["promote"]
+        for name in evaluations
+        if name != _BASELINE_NAME and decisions[name]["promote"]
     ]
     if not passing:
         # Baseline is a valid fallback only if it passed the same reference gates.
@@ -184,8 +191,35 @@ def _select_candidate(
             evaluations[name].metrics["average_precision"],
             -evaluations[name].metrics["brier"],
             name == "logistic_regression",
+            name,
         ),
     )
+
+
+def _metric_preference(evaluation: CandidateEvaluation) -> tuple[float, float, float]:
+    """Rank only on the SAME cohort, following the project's metric priority."""
+    metrics = evaluation.metrics
+    return (
+        float(metrics["recall_at_10pct"]),
+        float(metrics["average_precision"]),
+        -float(metrics["brier"]),
+    )
+
+
+def _strictly_better_on_same_cohort(
+    candidate: CandidateEvaluation, reference: CandidateEvaluation
+) -> bool:
+    """Prefer recall, then AP, then lower Brier; exact ties never move aliases."""
+    if candidate.cohort_hash != reference.cohort_hash:
+        raise ValueError("comparison models must use the identical validation cohort")
+    for candidate_value, reference_value in zip(
+        _metric_preference(candidate), _metric_preference(reference)
+    ):
+        if candidate_value > reference_value + 1e-12:
+            return True
+        if candidate_value < reference_value - 1e-12:
+            return False
+    return False
 
 
 def train_candidate(
@@ -223,6 +257,9 @@ def train_candidate(
     # Fail before fetching data or fitting models if tracking is misconfigured.
     # Server connectivity and artifact permissions are checked by actual logging.
     prepare_tracking(allow_local_tracking=allow_local_tracking)
+    registry_name = registered_model_name or os.environ.get(
+        "PROMISEOPS_REGISTERED_MODEL_NAME", "promiseops-late-delivery"
+    )
     dataset_id = os.environ.get("PROMISEOPS_DATASET_ID")
 
     # All source reads (cohort, features, receipt inventory and leakage audit)
@@ -277,27 +314,98 @@ def train_candidate(
         split.validation_order_ids,
     )
 
-    reference_evaluation = evaluations[_BASELINE_NAME]
+    # Read existing aliases BEFORE registering any new candidates. Missing
+    # aliases are expected for a brand-new registry; broken models/API errors
+    # fail closed instead of silently replacing a good challenger.
+    incumbents: dict[str, CandidateEvaluation] = {}
+    reference_versions: dict[str, str | None] = {
+        "champion": None,
+        "challenger": None,
+    }
+    for alias in ("champion", "challenger"):
+        reference = load_registry_reference(
+            registered_model_name=registry_name,
+            alias=alias,
+            allow_local_tracking=allow_local_tracking,
+        )
+        if reference is not None:
+            reference_versions[alias] = reference.version
+            reference_scores = positive_class_probability(
+                reference.model, split.validation_rows
+            )
+            incumbents[alias] = evaluate_candidates(
+                {alias: reference_scores},
+                split.validation_labels,
+                split.validation_order_ids,
+            )[alias]
+            del reference, reference_scores  # Do not retain loaded forest models.
+
     if champion_model is not None:
-        champion_scores = positive_class_probability(champion_model, split.validation_rows)
-        reference_evaluation = evaluate_candidates(
-            {"champion": champion_scores},
+        deployed_scores = positive_class_probability(champion_model, split.validation_rows)
+        incumbents["deployed_incumbent"] = evaluate_candidates(
+            {"deployed_incumbent": deployed_scores},
             split.validation_labels,
             split.validation_order_ids,
-        )["champion"]
-    decisions = {
-        name: apply_quality_gates(evaluation, reference_evaluation)
-        for name, evaluation in evaluations.items()
+        )["deployed_incumbent"]
+        del deployed_scores
+
+    # Apply existing quality gates against the strongest incumbent reference,
+    # or the prevalence baseline when no incumbent exists. Additionally demand
+    # strict ranking improvement over EACH existing incumbent; otherwise the
+    # existing challenger remains in place even if a new model is locally best.
+    gate_references = {
+        key: value
+        for key, value in incumbents.items()
+        if key in {"champion", "deployed_incumbent"}
     }
+    if not gate_references:
+        gate_references = {"prevalence_baseline": evaluations[_BASELINE_NAME]}
+    strongest_reference = max(gate_references.values(), key=_metric_preference)
+
+    decisions: dict[str, dict[str, Any]] = {}
+    for name, evaluation in evaluations.items():
+        decision = dict(apply_quality_gates(evaluation, strongest_reference))
+        outperforms = {
+            alias: _strictly_better_on_same_cohort(evaluation, reference)
+            for alias, reference in incumbents.items()
+        }
+        original_gate = bool(decision["promote"])
+        decision["quality_gate_passed"] = original_gate
+        decision["incumbent_comparisons"] = outperforms
+        decision["incumbent_metrics"] = {
+            alias: dict(reference.metrics) for alias, reference in incumbents.items()
+        }
+        decision["incumbent_versions"] = dict(reference_versions)
+        decision["selection_policy"] = "same_cohort_recall_then_ap_then_brier"
+        # The baseline remains a benchmark, not a challenger replacement once
+        # any real incumbent exists; a candidate must beat every incumbent.
+        decision["promote"] = (
+            original_gate
+            and all(outperforms.values())
+            and (name != _BASELINE_NAME or not incumbents)
+        )
+        decision["selection_reason"] = (
+            "quality_gate_failed" if not original_gate
+            else "baseline_not_eligible" if name == _BASELINE_NAME and incumbents
+            else "incumbent_not_outperformed" if not all(outperforms.values())
+            else "eligible_for_challenger"
+        )
+        decisions[name] = decision
     selected_name = _select_candidate(evaluations, decisions)
 
     output_root = Path(artifacts_dir or os.environ.get("PROMISEOPS_ARTIFACTS", "/tmp/artifacts"))
-    registry_name = registered_model_name or os.environ.get(
-        "PROMISEOPS_REGISTERED_MODEL_NAME", "promiseops-late-delivery"
-    )
     dataset_fingerprint = _dataset_identity(labeled_frame)
     dataset_id = dataset_id or f"sha256:{dataset_fingerprint}"
     schema_identity = _schema_identity()
+    registered_model_tags = {
+        "team": "g02",
+        "task": "late_delivery_probability",
+        "primary_metric": "recall_at_10pct",
+        "review_capacity": "0.10",
+        "timezone": "America/Sao_Paulo",
+        "data_source": "olist",
+        "deployment_policy": "manual_ci_approval",
+    }
     tracking_results: dict[str, TrackingResult] = {}
     bundle_manifests: dict[str, dict[str, Any]] = {}
 
@@ -379,11 +487,51 @@ def train_candidate(
                 "as_of": evaluation_time.isoformat(),
             }
         )
+        selected = name == selected_name
+        quality_passed = bool(gate_decision["quality_gate_passed"])
+        version_tags = {
+            "algorithm": name,
+            "source_commit": commit,
+            "train_end": train_cutoff.isoformat(),
+            "validation_end": validation_cutoff.isoformat(),
+            "as_of": evaluation_time.isoformat(),
+            "label_cutoff": train_cutoff.isoformat(),
+            "dataset_identity": dataset_id,
+            "dataset_sha256": dataset_fingerprint,
+            "schema_identity": schema_identity,
+            "feature_contract_sha256": feature_contract_sha256,
+            "dataset_manifest_sha256": dataset_manifest_sha256,
+            "artifact_sha256": str(manifest["artifact_sha256"]),
+            "train_cohort_hash": train_stats["cohort_hash"],
+            "validation_cohort_hash": validation_stats["cohort_hash"],
+            "quality_gate": "passed" if quality_passed else "failed",
+            "selection_status": "selected" if selected else "not_selected",
+            "approval_status": "pending" if selected and quality_passed else "not_requested",
+            "champion_version_at_evaluation": reference_versions["champion"] or "absent",
+            "challenger_version_at_evaluation": reference_versions["challenger"] or "absent",
+            "beats_champion": (
+                str(decisions[name]["incumbent_comparisons"]["champion"]).lower()
+                if "champion" in incumbents else "not_applicable"
+            ),
+            "beats_challenger": (
+                str(decisions[name]["incumbent_comparisons"]["challenger"]).lower()
+                if "challenger" in incumbents else "not_applicable"
+            ),
+            "beats_deployed_incumbent": (
+                str(decisions[name]["incumbent_comparisons"]["deployed_incumbent"]).lower()
+                if "deployed_incumbent" in incumbents else "not_applicable"
+            ),
+            "comparison_policy": "same_cohort_recall_then_ap_then_brier",
+            "selection_reason": (
+                "selected_for_review" if selected else gate_decision["selection_reason"]
+            ),
+        }
         tracking_results[name] = log_run(
             run_name=f"{name}-{commit[:12]}",
             params=params,
             metrics={**evaluation.metrics, **cohort_metrics},
             tags={
+                **version_tags,
                 "dataset_identity": dataset_id,
                 "dataset_fingerprint": dataset_fingerprint,
                 "schema_identity": schema_identity,
@@ -400,7 +548,7 @@ def train_candidate(
                 "model_name": name,
                 "source_commit": commit,
                 "cohort_hash": evaluation.cohort_hash,
-                "gate_passed": str(gate_decision["promote"]).lower(),
+                "gate_passed": str(quality_passed).lower(),
                 "selected": str(name == selected_name).lower(),
             },
             artifacts={
@@ -413,8 +561,27 @@ def train_candidate(
             input_example=split.train_rows.loc[:, FEATURE_COLUMNS].head(5),
             model_artifact_path=name,
             registered_model_name=registry_name,
+            model_version_tags=version_tags,
             allow_local_tracking=allow_local_tracking,
         )
+
+    # Mutate the challenger alias only AFTER every run, artifact and version tag
+    # has been stored. Never create or move the champion alias from training.
+    selected_version = None
+    if selected_name is not None:
+        selected_result = tracking_results[selected_name]
+        if selected_result.backend == "mlflow":
+            selected_version = selected_result.registered_model_version
+            if not selected_version:
+                raise RuntimeError("selected model is missing a registered MLflow version")
+    finalize_model_registry(
+        registered_model_name=registry_name,
+        registered_model_tags=registered_model_tags,
+        challenger_version=selected_version,
+        expected_challenger_version=reference_versions["challenger"],
+        verify_challenger_version=selected_version is not None,
+        allow_local_tracking=allow_local_tracking,
+    )
 
     return TrainingResult(
         candidates=fitted_candidates,
