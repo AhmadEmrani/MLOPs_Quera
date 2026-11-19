@@ -82,8 +82,9 @@ def _cohort_order_ids(connection, *, validation_end: datetime, as_of: datetime) 
 
     with connection.cursor() as cursor:
         cursor.execute(
-            statement.replace(":validation_end", "%s").replace(":as_of", "%s"),
-            (validation_end, as_of),
+            statement.replace(":validation_end", "%(validation_end)s")
+            .replace(":as_of", "%(as_of)s"),
+            {"validation_end": validation_end, "as_of": as_of},
         )
         return [str(row[0]) for row in cursor.fetchall()]
 
