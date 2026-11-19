@@ -181,9 +181,9 @@ def _select_candidate(
         if name != _BASELINE_NAME and decisions[name]["promote"]
     ]
     if not passing:
-        # Baseline is a valid fallback only if it passed the same reference gates.
-        # With an incumbent, all candidates (including baseline) may be rejected.
-        return _BASELINE_NAME if decisions[_BASELINE_NAME]["promote"] else None
+        # The prevalence baseline is a benchmark, never a deployable challenger.
+        # If all learned models fail the gates, keep the existing alias unchanged.
+        return None
     return max(
         passing,
         key=lambda name: (
@@ -377,16 +377,16 @@ def train_candidate(
         }
         decision["incumbent_versions"] = dict(reference_versions)
         decision["selection_policy"] = "same_cohort_recall_then_ap_then_brier"
-        # The baseline remains a benchmark, not a challenger replacement once
-        # any real incumbent exists; a candidate must beat every incumbent.
+        # A prevalence-only baseline is diagnostic: it may pass its own
+        # comparison, but must never become a challenger, even on first run.
         decision["promote"] = (
             original_gate
+            and name != _BASELINE_NAME
             and all(outperforms.values())
-            and (name != _BASELINE_NAME or not incumbents)
         )
         decision["selection_reason"] = (
-            "quality_gate_failed" if not original_gate
-            else "baseline_not_eligible" if name == _BASELINE_NAME and incumbents
+            "baseline_reference_only" if name == _BASELINE_NAME
+            else "quality_gate_failed" if not original_gate
             else "incumbent_not_outperformed" if not all(outperforms.values())
             else "eligible_for_challenger"
         )
@@ -504,7 +504,10 @@ def train_candidate(
             "artifact_sha256": str(manifest["artifact_sha256"]),
             "train_cohort_hash": train_stats["cohort_hash"],
             "validation_cohort_hash": validation_stats["cohort_hash"],
-            "quality_gate": "passed" if quality_passed else "failed",
+            "quality_gate": (
+                "reference_only" if name == _BASELINE_NAME
+                else "passed" if quality_passed else "failed"
+            ),
             "selection_status": "selected" if selected else "not_selected",
             "approval_status": "pending" if selected and quality_passed else "not_requested",
             "champion_version_at_evaluation": reference_versions["champion"] or "absent",
