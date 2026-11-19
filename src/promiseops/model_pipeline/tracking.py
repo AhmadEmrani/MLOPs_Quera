@@ -6,6 +6,7 @@ import importlib
 import json
 import math
 import os
+import re
 import shutil
 import uuid
 from collections.abc import Mapping
@@ -175,10 +176,20 @@ def _registry_alias_version(client, *, registered_model_name: str, alias: str) -
     except Exception as error:
         # Avoid a hard MLflow dependency for the local-only development mode.
         exceptions = importlib.import_module("mlflow.exceptions")
-        if isinstance(error, exceptions.MlflowException) and (
-            getattr(error, "error_code", None) == "RESOURCE_DOES_NOT_EXIST"
-        ):
-            return None
+        if isinstance(error, exceptions.MlflowException):
+            error_code = getattr(error, "error_code", None)
+            if error_code == "RESOURCE_DOES_NOT_EXIST":
+                return None
+            # This MLflow server reports an *absent alias* as
+            # INVALID_PARAMETER_VALUE. Accept only the exact missing-alias
+            # message for the alias we requested. Do not swallow other 400s.
+            if error_code == "INVALID_PARAMETER_VALUE" and re.fullmatch(
+                rf"(?:INVALID_PARAMETER_VALUE:\s*)?Registered model alias "
+                rf"['\"]?{re.escape(alias)}['\"]? not found\.?",
+                str(error).strip(),
+                flags=re.IGNORECASE,
+            ):
+                return None
         raise
     version = str(result.version)
     if not version.isdigit() or int(version) < 1:
