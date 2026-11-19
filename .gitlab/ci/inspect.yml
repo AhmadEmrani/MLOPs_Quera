@@ -18,3 +18,58 @@ inspect-ci-config-presence:
   allow_failure: true
   script:
     - python ci/inspect_ci_config.py
+
+inspect-training-failure:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -eu
+
+      NAMESPACE="g02-jobs"
+      JOB_NAME="train-8fd240615117a8cc983b38d4"
+
+      echo "=== TRAINING JOB ==="
+      kubectl get job "$JOB_NAME" \
+        -n "$NAMESPACE"
+
+      echo "=== JOB CONDITIONS ==="
+      kubectl get job "$JOB_NAME" \
+        -n "$NAMESPACE" \
+        -o jsonpath='{range .status.conditions[*]}type={.type} reason={.reason} message={.message}{"\n"}{end}'
+
+      echo "=== JOB PODS ==="
+      kubectl get pods -n "$NAMESPACE" \
+        -l "batch.kubernetes.io/job-name=$JOB_NAME"
+
+      echo "=== LOG ACCESS ==="
+      kubectl auth can-i get pods/log \
+        -n "$NAMESPACE"
+
+      echo "=== CONTAINER EXIT STATUS AND LOGS ==="
+
+      PODS="$(kubectl get pods \
+        -n "$NAMESPACE" \
+        -l "batch.kubernetes.io/job-name=$JOB_NAME" \
+        -o jsonpath='{.items[*].metadata.name}')"
+
+      for POD in $PODS; do
+        echo "=== POD: $POD ==="
+
+        kubectl get pod "$POD" \
+          -n "$NAMESPACE" \
+          -o jsonpath='{range .status.containerStatuses[*]}container={.name} exit={.state.terminated.exitCode} reason={.state.terminated.reason}{"\n"}{end}'
+
+        echo ""
+        echo "=== LAST 120 LOG LINES ==="
+
+        kubectl logs "$POD" \
+          -n "$NAMESPACE" \
+          --all-containers=true \
+          --tail=120 \
+          --timestamps || true
+      done
