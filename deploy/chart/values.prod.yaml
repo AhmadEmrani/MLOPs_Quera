@@ -1,0 +1,26 @@
+# Production – namespace budget: 3 CPU / 3 GiB
+# API worst-case: 3 HPA replicas × 750m + 1 surge pod = 3 CPU / 3 × 768Mi + 768Mi = 3 GiB (fits exactly).
+# batchJob is disabled: enabling it adds 750m/768Mi and exceeds both quotas.
+# Re-enable only after confirming quota increase with platform staff.
+
+replicaCount: 2
+
+# image.digest must be injected by CI: helm upgrade ... --set image.digest=sha256:<real>
+# Do not commit a digest here; keep it empty to force CI to supply it.
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 750m
+    memory: 768Mi
+
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+
+# batchJob intentionally left at base default (enabled: false).
+# See budget note above.
