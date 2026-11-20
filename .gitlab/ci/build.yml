@@ -7,12 +7,16 @@ fetch-release:
   script:
     - set -eu
     - mkdir -p release
-    - for f in model.joblib release.json feature_contract.json dataset_manifest.json; do curl --fail --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN" --output "release/$f" "$RELEASE_PKG_URL/$f"; done
+    - |
+      for f in model.joblib release.json feature_contract.json dataset_manifest.json; do
+        curl --fail --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN" --output "release/$f" "$RELEASE_PKG_URL/$f"
+      done
     - test -s release/release.json
     - test -s release/model.joblib
   artifacts:
     paths: [release/]
     expire_in: 14 days
+
 
 build-own-image:
   stage: build
