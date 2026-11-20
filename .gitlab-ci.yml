@@ -26,5 +26,6 @@ include:
   - local: "/.gitlab/ci/build.yml"
   - local: "/.gitlab/ci/airflow.yml"
   - local: "/.gitlab/ci/inspect.yml"
+  - local: ".gitlab/ci/inspect-deploy-failure.yml"
   - local: "/.gitlab/ci/deploy.yml"
 
