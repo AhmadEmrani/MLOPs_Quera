@@ -1,0 +1,12 @@
+helm-validate:
+  stage: test
+  needs: []
+  script:
+    - command -v helm >/dev/null || { echo "helm not found in CI_TOOLBOX_IMAGE"; exit 1; }
+    - DUMMY_DIGEST="sha256:$(printf '1%.0s' $(seq 64))"
+    - helm lint deploy/chart -f deploy/chart/values.staging.yaml --set image.digest="$DUMMY_DIGEST" --set image.repository="$CI_REGISTRY_IMAGE/app"
+    - helm lint deploy/chart -f deploy/chart/values.prod.yaml --set image.digest="$DUMMY_DIGEST" --set image.repository="$CI_REGISTRY_IMAGE/app"
+    - helm template promiseops-staging deploy/chart -f deploy/chart/values.staging.yaml --set image.digest="$DUMMY_DIGEST" --set image.repository="$CI_REGISTRY_IMAGE/app" > /tmp/staging.yaml
+    - helm template promiseops-prod deploy/chart -f deploy/chart/values.prod.yaml --set image.digest="$DUMMY_DIGEST" --set image.repository="$CI_REGISTRY_IMAGE/app" > /tmp/prod.yaml
+    - "! grep -q 'kind: CronJob' /tmp/prod.yaml"
+    - grep -q 'kind: CronJob' /tmp/staging.yaml
