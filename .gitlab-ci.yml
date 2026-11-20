@@ -1,9 +1,9 @@
 # PromiseOps G02
 # All CI jobs are loaded from local YAML files.
 
-stages: [test, build, sync, inspect]
-
+stages: [test, build, deploy_staging, model_release, model_image, deploy_model_staging, deploy_prod, sync, inspect]
 variables:
+  RUN_MODEL_RELEASE: "false"
   UV_OFFLINE: "1"
   UV_PYTHON_DOWNLOADS: never
   PIP_NO_INDEX: "1"
@@ -24,3 +24,4 @@ include:
   - local: "/.gitlab/ci/build.yml"
   - local: "/.gitlab/ci/airflow.yml"
   - local: "/.gitlab/ci/inspect.yml"
+  - local: "/.gitlab/ci/release.yml"

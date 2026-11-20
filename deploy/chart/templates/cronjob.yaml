@@ -8,11 +8,16 @@ metadata:
     {{- include "promiseops.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.batchJob.schedule | quote }}
+  suspend: {{ .Values.batchJob.suspend }}
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 300
+  # Durable cursoring means the next invocation can resume a delayed replay window.
+  startingDeadlineSeconds: 86400
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 1
   jobTemplate:
+    metadata:
+      labels:
+        promiseops.io/workload: batch-score
     spec:
       activeDeadlineSeconds: {{ .Values.batchJob.activeDeadlineSeconds }}
       backoffLimit: {{ .Values.batchJob.backoffLimit }}
@@ -20,7 +25,7 @@ spec:
         metadata:
           labels:
             # Intentionally separate from promiseops.selectorLabels so batch pods
-            # are excluded from the API Service endpoints and PDB headcount.
+            # are excluded from the API Service endpoints and rollout accounting.
             app.kubernetes.io/name: {{ .Chart.Name }}
             app.kubernetes.io/instance: {{ .Release.Name }}-batch
             app.kubernetes.io/component: batch
@@ -42,10 +47,16 @@ spec:
             - name: batch
               image: {{ include "promiseops.image" . | quote }}
               imagePullPolicy: IfNotPresent
+              command: {{ .Values.batchJob.command | toJson }}
               args: {{ .Values.batchJob.args | toJson }}
-              envFrom:
-                - secretRef:
-                    name: {{ .Values.runtimeConfig.secretName }}
+              env:
+                - name: PROMISEOPS_DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.runtimeConfig.secretName }}
+                      key: PROMISEOPS_DATABASE_URL
+                - name: PROMISEOPS_BATCH_LOOKBACK_HOURS
+                  value: {{ .Values.batchJob.lookbackHours | quote }}
               resources:
                 {{- toYaml .Values.batchJob.resources | nindent 16 }}
               securityContext:

@@ -2,12 +2,15 @@ fetch-release:
   stage: build
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
-  variables:
-    RELEASE_PKG_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/promiseops-release/cf9f672b"
   script:
     - set -eu
     - mkdir -p release
     - |
+      RELEASE_PKG_VERSION="${PROMISEOPS_RELEASE_PACKAGE_VERSION:-cf9f672b}"
+      case "$RELEASE_PKG_VERSION" in
+        *[!A-Za-z0-9._-]*|'') echo "Invalid PROMISEOPS_RELEASE_PACKAGE_VERSION" >&2; exit 1 ;;
+      esac
+      RELEASE_PKG_URL="$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/promiseops-release/$RELEASE_PKG_VERSION"
       for f in model.joblib release.json feature_contract.json dataset_manifest.json; do
         curl --fail --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN" --output "release/$f" "$RELEASE_PKG_URL/$f"
       done
