@@ -14,7 +14,7 @@ serviceAccount:
 
 # Name of the registry pull secret pre-created by platform staff.
 imagePullSecrets:
-  - name: registry-pull-secret
+  - name: registry-pull
 
 service:
   # ClusterIP is hardcoded in api-service.yaml; this only controls the port.
