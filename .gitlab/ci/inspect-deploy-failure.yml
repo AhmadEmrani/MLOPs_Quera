@@ -1,0 +1,13 @@
+# Read-only diagnosis of the failed staging deploy. Only get/describe. No secret data (names only).
+inspect-deploy-failure:
+  needs: []
+  stage: inspect
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - kubectl -n "$TEAM-staging" describe deployment promiseops || true
+    - kubectl -n "$TEAM-staging" get rs,events --sort-by=.lastTimestamp || true
+    - kubectl -n "$TEAM-staging" get serviceaccount,secret || true
+    - helm -n "$TEAM-staging" status promiseops || true
