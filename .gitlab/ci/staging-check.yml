@@ -1,0 +1,25 @@
+# Static staging-readiness check: helm lint + helm template. No cluster access, no deploy.
+# The image is referenced by digest only (never by tag). Override STAGING_CHECK_DIGEST
+# in a pipeline variable to check a newer digest.
+staging-check:
+  stage: test
+  needs: []
+  variables:
+    STAGING_CHECK_DIGEST: "sha256:ffc6b763459e627a84be5a8fcc807a7c499ff350e71463c349a0ef6540577085"
+  script:
+    - set -eu
+    - helm version --short
+    - echo "$STAGING_CHECK_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
+    - |
+      SETS="--set image.repository=$CI_REGISTRY_IMAGE/app --set image.digest=$STAGING_CHECK_DIGEST"
+      helm lint deploy/chart -f deploy/chart/values.staging.yaml $SETS
+      helm template promiseops deploy/chart -f deploy/chart/values.staging.yaml $SETS > staging-rendered.yaml
+      helm template promiseops deploy/chart -f deploy/chart/values.prod.yaml $SETS > prod-rendered.yaml
+    - grep -q "@$STAGING_CHECK_DIGEST" staging-rendered.yaml
+    - |
+      if grep -E '^\s*image:' staging-rendered.yaml | grep -v '@sha256:'; then
+        echo "non-digest image found"; exit 1
+      fi
+  artifacts:
+    paths: [staging-rendered.yaml, prod-rendered.yaml]
+    expire_in: 14 days
