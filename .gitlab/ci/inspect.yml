@@ -9,6 +9,66 @@ inspect-own-namespaces:
     - for area in staging prod; do kubectl get pods,deployments,jobs -n "$TEAM-$area"; done
     - kubectl get pods,jobs -n "$TEAM-jobs"
 
+# Read-only discovery for using the deployed API. Prints cluster resource
+# metadata and ingress hosts only; it never reads Secret data or pod env values.
+inspect-api-endpoint:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -u
+      : "${TEAM:=g02}"
+      REPORT="api-usage-${TEAM}.txt"
+      {
+        echo "PromiseOps API discovery (team=${TEAM}; commit=${CI_COMMIT_SHA:-unknown})"
+        echo "No Secret values are read or printed by this job."
+        for area in staging prod; do
+          namespace="${TEAM}-${area}"
+          echo
+          echo "=== ${area}: services and endpoints ==="
+          kubectl get services,endpoints -n "$namespace" \
+            -o custom-columns='KIND:.kind,NAME:.metadata.name,TYPE:.spec.type,CLUSTER-IP:.spec.clusterIP,PORTS:.spec.ports[*].port,ENDPOINTS:.subsets[*].addresses[*].ip' \
+            || echo "Could not list services/endpoints in ${namespace}"
+          echo "=== ${area}: deployments, pods, HPA, PDB, CronJobs ==="
+          kubectl get deployments,pods,hpa,pdb,cronjobs -n "$namespace" -o wide \
+            || echo "Some workload resources unavailable in ${namespace}"
+          echo "=== ${area}: deployed image references ==="
+          kubectl get deployments -n "$namespace" \
+            -o custom-columns='DEPLOYMENT:.metadata.name,IMAGES:.spec.template.spec.containers[*].image' \
+            || echo "Cannot list deployment image references in ${namespace}"
+          echo "=== ${area}: ingress host and path ==="
+          kubectl get ingress -n "$namespace" \
+            -o custom-columns='NAME:.metadata.name,HOSTS:.spec.rules[*].host,PATHS:.spec.rules[*].http.paths[*].path' \
+            || echo "No ingress visible in ${namespace} (it may be provisioned elsewhere)"
+          echo "=== ${area}: runtime Secret names and key names only ==="
+          kubectl get secret -n "$namespace" \
+            -o go-template='{{range .items}}{{.metadata.name}}{{" keys="}}{{range $key, $_ := .data}}{{$key}} {{end}}{{"\n"}}{{end}}' \
+            || echo "Cannot list Secret metadata in ${namespace}"
+          echo "=== ${area}: selected resource permissions ==="
+          for resource in services endpoints deployments pods hpa ingress secrets; do
+            printf '%s: ' "$resource"
+            kubectl auth can-i get "$resource" -n "$namespace" || true
+          done
+        done
+        echo
+        echo "=== API contract ==="
+        echo "POST /predict; header: X-API-Key; JSON: {\"order_id\":\"<known-order-id>\",\"request_id\":\"optional-id\"}"
+        echo "GET /healthz and GET /readyz need no API key; /metrics requires X-API-Key."
+        echo "Success response contains risk_probability, model_version, request_id."
+        echo "In-cluster URL pattern: http://<service-name>.${TEAM}-<area>.svc:80 (use the service name listed above)."
+        echo "Use the ingress HOST above, or port-forward the discovered ClusterIP Service from an authorized kubectl context."
+        echo "The actual API key is deliberately not retrieved. Obtain it through the approved secret delivery process."
+      } | tee "$REPORT"
+  artifacts:
+    when: always
+    expire_in: 7 days
+    paths:
+      - api-usage-*.txt
+
 inspect-ci-config-presence:
   stage: inspect
   needs: []
