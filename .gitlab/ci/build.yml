@@ -1,5 +1,28 @@
+fetch-release:
+  stage: build
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  variables:
+    RELEASE_PKG_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/promiseops-release/cf9f672b"
+  script:
+    - set -eu
+    - mkdir -p release
+    - |
+      for f in model.joblib release.json feature_contract.json dataset_manifest.json; do
+        curl --fail --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN" --output "release/$f" "$RELEASE_PKG_URL/$f"
+      done
+    - test -s release/release.json
+    - test -s release/model.joblib
+  artifacts:
+    paths: [release/]
+    expire_in: 14 days
+
+
 build-own-image:
   stage: build
+  needs:
+    - job: fetch-release
+      artifacts: true
   resource_group: image-build
   rules:
     - if: '$CI_COMMIT_BRANCH == "main"'
@@ -69,3 +92,4 @@ build-worker-image:
   artifacts:
     paths: [worker-build.json]
     expire_in: 14 days
+
