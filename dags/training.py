@@ -257,18 +257,55 @@ def promiseops_training():
     @task.sensor(poke_interval=30, timeout=6 * 60 * 60, mode="reschedule")
     def wait_for_training(job: dict):
         from airflow.providers.cncf.kubernetes.hooks.kubernetes import KubernetesHook
-        from airflow.sdk import PokeReturnValue
+        from airflow.sdk import BaseHook, PokeReturnValue
         from airflow.sdk.exceptions import AirflowFailException
+        from pathlib import Path
+        import os
 
         if job.get("namespace") != _JOBS_NAMESPACE:
             raise AirflowFailException("Training Job namespace is outside the team jobs namespace")
 
-        # Uses the Airflow Task Pod's existing ServiceAccount, not a missing
-        # promiseops_jobs_kubernetes Connection. Read-only operations only.
-        hook = KubernetesHook(
-            kubernetes_conn_id="kubernetes_default",
-            in_cluster=True,
+        # Prefer the dedicated team connection. Do not force in_cluster=True:
+        # that overrides the connection and fails when the task pod has no
+        # mounted service-account token (as reported by kube_access_probe).
+        try:
+            connection = BaseHook.get_connection("promiseops_jobs_kubernetes")
+        except Exception as error:
+            raise AirflowFailException(
+                "Airflow connection 'promiseops_jobs_kubernetes' is unavailable; "
+                "configure it for read-only access to g02-jobs"
+            ) from error
+
+        extras = connection.extra_dejson or {}
+        in_cluster = extras.get("in_cluster") is True or str(
+            extras.get("in_cluster", "")
+        ).lower() == "true"
+        has_connection_config = in_cluster or bool(
+            extras.get("kube_config_path") or extras.get("kube_config")
         )
+        service_token = Path(
+            "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        )
+        if in_cluster and not service_token.is_file():
+            raise AirflowFailException(
+                "Airflow Kubernetes connection requests in-cluster authentication, but the "
+                "task pod has no mounted service-account token. Mount the approved read-only "
+                "service account or configure kube_config_path/kube_config on the connection."
+            )
+        default_config = any(
+            Path(path).expanduser().is_file()
+            for path in os.environ.get("KUBECONFIG", "").split(os.pathsep)
+            if path
+        ) or (Path.home() / ".kube" / "config").is_file()
+        if not has_connection_config and not default_config:
+            raise AirflowFailException(
+                "Airflow connection 'promiseops_jobs_kubernetes' has no Kubernetes auth "
+                "configuration. Set its in_cluster, kube_config_path, or kube_config extra, "
+                "or provide a kubeconfig to the Airflow task runtime. No default kubeconfig "
+                "was found in KUBECONFIG or ~/.kube/config."
+            )
+
+        hook = KubernetesHook(kubernetes_conn_id="promiseops_jobs_kubernetes")
         try:
             kubernetes_job = hook.get_job(job["job_name"], job["namespace"])
         except Exception as error:
