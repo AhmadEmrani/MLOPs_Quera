@@ -14,7 +14,9 @@ RUN --network=none uv pip install --python /opt/venv/bin/python --no-index --no-
 FROM ${BASE_IMAGE}
 COPY --from=build /opt/venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+# Reviewed, immutable model bundle (root-owned, read-only at runtime).
+COPY --chown=0:0 release/ /opt/promiseops/release/
+RUN test -s /opt/promiseops/release/release.json
 USER 10001:10001
 EXPOSE 8080
-# Add your reviewed, immutable model bundle before enabling staging/production.
 ENTRYPOINT ["uvicorn", "promiseops.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]
