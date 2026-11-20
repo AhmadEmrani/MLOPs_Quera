@@ -11,3 +11,16 @@ inspect-deploy-failure:
     - kubectl -n "$TEAM-staging" get rs,events --sort-by=.lastTimestamp || true
     - kubectl -n "$TEAM-staging" get serviceaccount,secret || true
     - helm -n "$TEAM-staging" status promiseops || true
+
+inspect-deploy-rs:
+  needs: []
+  stage: inspect
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - kubectl -n "$TEAM-staging" describe rs -l app=promiseops || true
+    - kubectl -n "$TEAM-staging" get events || true
+    - kubectl -n "$TEAM-staging" get serviceaccount promiseops-api || true
+    - kubectl -n "$TEAM-staging" get secret registry-pull-secret || true
