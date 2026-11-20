@@ -6,16 +6,13 @@ fetch-release:
     RELEASE_PKG_URL: "$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/promiseops-release/cf9f672b"
   script:
     - set -eu
-    - rm -rf release && mkdir -p release
-    - |
-      for f in dataset_manifest.json feature_contract.json model.joblib release.json; do
-        curl --fail-with-body -sS --header "PRIVATE-TOKEN: $DEPLOY_TOKEN" -o "release/$f" "$RELEASE_PKG_URL/$f"
-      done
-    - test -s release/model.joblib
+    - mkdir -p release
+    - for f in model.joblib release.json feature_contract.json dataset_manifest.json; do curl --fail --silent --show-error --header "JOB-TOKEN: $CI_JOB_TOKEN" --output "release/$f" "$RELEASE_PKG_URL/$f"; done
     - test -s release/release.json
+    - test -s release/model.joblib
   artifacts:
     paths: [release/]
-    expire_in: 1 day
+    expire_in: 14 days
 
 build-own-image:
   stage: build
@@ -91,3 +88,4 @@ build-worker-image:
   artifacts:
     paths: [worker-build.json]
     expire_in: 14 days
+
