@@ -5,7 +5,17 @@ contracts:
     - uv venv --python /usr/local/bin/python .venv
     - uv pip sync --python .venv/bin/python --no-index --find-links wheelhouse --require-hashes requirements.lock
     - uv pip install --python .venv/bin/python --no-index --no-deps --no-build-isolation .
-    - .venv/bin/python -m pytest -q
+    # -rs: skip reasons are printed (the 4 DB tests skip here because no PostgreSQL is reachable;
+    # they are covered by the separate tests-postgres job once the mentor confirms the service).
+    - mkdir -p reports
+    - .venv/bin/python -m pytest -q -rs --junitxml=reports/junit.xml
+  artifacts:
+    when: always
+    paths: [reports/junit.xml]
+    reports:
+      junit: reports/junit.xml
+    expire_in: 14 days
+
 
 package-airflow:
   stage: test

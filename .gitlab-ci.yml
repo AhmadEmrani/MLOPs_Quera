@@ -21,6 +21,8 @@ default:
 
 include:
   - local: "/.gitlab/ci/test.yml"
+  - local: "/.gitlab/ci/helm.yml"
+  - local: "/.gitlab/ci/staging-check.yml"
   - local: "/.gitlab/ci/build.yml"
   - local: "/.gitlab/ci/airflow.yml"
   - local: "/.gitlab/ci/inspect.yml"
