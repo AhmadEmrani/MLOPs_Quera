@@ -254,108 +254,108 @@ def promiseops_training():
         LOGGER.info("Training Job accepted: %s", json.dumps(result, sort_keys=True))
         return result
 
-    @task.sensor(poke_interval=30, timeout=6 * 60 * 60, mode="reschedule")
-    def wait_for_training(job: dict):
-        from airflow.providers.cncf.kubernetes.hooks.kubernetes import KubernetesHook
-        from airflow.sdk import BaseHook, PokeReturnValue
-        from airflow.sdk.exceptions import AirflowFailException
-        from pathlib import Path
-        import os
+    # @task.sensor(poke_interval=30, timeout=6 * 60 * 60, mode="reschedule")
+    # def wait_for_training(job: dict):
+    #     from airflow.providers.cncf.kubernetes.hooks.kubernetes import KubernetesHook
+    #     from airflow.sdk import BaseHook, PokeReturnValue
+    #     from airflow.sdk.exceptions import AirflowFailException
+    #     from pathlib import Path
+    #     import os
 
-        if job.get("namespace") != _JOBS_NAMESPACE:
-            raise AirflowFailException("Training Job namespace is outside the team jobs namespace")
+    #     if job.get("namespace") != _JOBS_NAMESPACE:
+    #         raise AirflowFailException("Training Job namespace is outside the team jobs namespace")
 
-        # Prefer the dedicated team connection. Do not force in_cluster=True:
-        # that overrides the connection and fails when the task pod has no
-        # mounted service-account token (as reported by kube_access_probe).
-        try:
-            connection = BaseHook.get_connection("promiseops_jobs_kubernetes")
-        except Exception as error:
-            raise AirflowFailException(
-                "Airflow connection 'promiseops_jobs_kubernetes' is unavailable; "
-                "configure it for read-only access to g02-jobs"
-            ) from error
+    #     # Prefer the dedicated team connection. Do not force in_cluster=True:
+    #     # that overrides the connection and fails when the task pod has no
+    #     # mounted service-account token (as reported by kube_access_probe).
+    #     try:
+    #         connection = BaseHook.get_connection("promiseops_jobs_kubernetes")
+    #     except Exception as error:
+    #         raise AirflowFailException(
+    #             "Airflow connection 'promiseops_jobs_kubernetes' is unavailable; "
+    #             "configure it for read-only access to g02-jobs"
+    #         ) from error
 
-        extras = connection.extra_dejson or {}
-        in_cluster = extras.get("in_cluster") is True or str(
-            extras.get("in_cluster", "")
-        ).lower() == "true"
-        has_connection_config = in_cluster or bool(
-            extras.get("kube_config_path") or extras.get("kube_config")
-        )
-        service_token = Path(
-            "/var/run/secrets/kubernetes.io/serviceaccount/token"
-        )
-        if in_cluster and not service_token.is_file():
-            raise AirflowFailException(
-                "Airflow Kubernetes connection requests in-cluster authentication, but the "
-                "task pod has no mounted service-account token. Mount the approved read-only "
-                "service account or configure kube_config_path/kube_config on the connection."
-            )
-        default_config = any(
-            Path(path).expanduser().is_file()
-            for path in os.environ.get("KUBECONFIG", "").split(os.pathsep)
-            if path
-        ) or (Path.home() / ".kube" / "config").is_file()
-        if not has_connection_config and not default_config:
-            raise AirflowFailException(
-                "Airflow connection 'promiseops_jobs_kubernetes' has no Kubernetes auth "
-                "configuration. Set its in_cluster, kube_config_path, or kube_config extra, "
-                "or provide a kubeconfig to the Airflow task runtime. No default kubeconfig "
-                "was found in KUBECONFIG or ~/.kube/config."
-            )
+    #     extras = connection.extra_dejson or {}
+    #     in_cluster = extras.get("in_cluster") is True or str(
+    #         extras.get("in_cluster", "")
+    #     ).lower() == "true"
+    #     has_connection_config = in_cluster or bool(
+    #         extras.get("kube_config_path") or extras.get("kube_config")
+    #     )
+    #     service_token = Path(
+    #         "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    #     )
+    #     if in_cluster and not service_token.is_file():
+    #         raise AirflowFailException(
+    #             "Airflow Kubernetes connection requests in-cluster authentication, but the "
+    #             "task pod has no mounted service-account token. Mount the approved read-only "
+    #             "service account or configure kube_config_path/kube_config on the connection."
+    #         )
+    #     default_config = any(
+    #         Path(path).expanduser().is_file()
+    #         for path in os.environ.get("KUBECONFIG", "").split(os.pathsep)
+    #         if path
+    #     ) or (Path.home() / ".kube" / "config").is_file()
+    #     if not has_connection_config and not default_config:
+    #         raise AirflowFailException(
+    #             "Airflow connection 'promiseops_jobs_kubernetes' has no Kubernetes auth "
+    #             "configuration. Set its in_cluster, kube_config_path, or kube_config extra, "
+    #             "or provide a kubeconfig to the Airflow task runtime. No default kubeconfig "
+    #             "was found in KUBECONFIG or ~/.kube/config."
+    #         )
 
-        hook = KubernetesHook(kubernetes_conn_id="promiseops_jobs_kubernetes")
-        try:
-            kubernetes_job = hook.get_job(job["job_name"], job["namespace"])
-        except Exception as error:
-            if getattr(error, "status", None) == 404:
-                return PokeReturnValue(is_done=False)
-            raise  # e.g. 403: staff must grant read-only job/pod/log RBAC
+    #     hook = KubernetesHook(kubernetes_conn_id="promiseops_jobs_kubernetes")
+    #     try:
+    #         kubernetes_job = hook.get_job(job["job_name"], job["namespace"])
+    #     except Exception as error:
+    #         if getattr(error, "status", None) == 404:
+    #             return PokeReturnValue(is_done=False)
+    #         raise  # e.g. 403: staff must grant read-only job/pod/log RBAC
 
-        conditions = getattr(getattr(kubernetes_job, "status", None), "conditions", None) or []
-        complete = next(
-            (c for c in conditions if c.type == "Complete" and c.status == "True"), None
-        )
-        failed = next(
-            (c for c in conditions if c.type == "Failed" and c.status == "True"), None
-        )
-        if not complete and not failed:
-            return PokeReturnValue(is_done=False)
+    #     conditions = getattr(getattr(kubernetes_job, "status", None), "conditions", None) or []
+    #     complete = next(
+    #         (c for c in conditions if c.type == "Complete" and c.status == "True"), None
+    #     )
+    #     failed = next(
+    #         (c for c in conditions if c.type == "Failed" and c.status == "True"), None
+    #     )
+    #     if not complete and not failed:
+    #         return PokeReturnValue(is_done=False)
 
-        try:
-            pods = hook.get_namespaced_pod_list(
-                namespace=job["namespace"],
-                label_selector=f"job-name={job['job_name']}",
-            )
-            for pod in pods.items:
-                for container in pod.spec.containers:
-                    logs = hook.core_v1_client.read_namespaced_pod_log(
-                        name=pod.metadata.name,
-                        namespace=job["namespace"],
-                        container=container.name,
-                        tail_lines=200,
-                    )
-                    LOGGER.info(
-                        "Worker logs for pod %s container %s:\n%s",
-                        pod.metadata.name,
-                        container.name,
-                        logs,
-                    )
-        except Exception:
-            LOGGER.exception("Could not retrieve logs for training Job %s", job["job_name"])
+    #     try:
+    #         pods = hook.get_namespaced_pod_list(
+    #             namespace=job["namespace"],
+    #             label_selector=f"job-name={job['job_name']}",
+    #         )
+    #         for pod in pods.items:
+    #             for container in pod.spec.containers:
+    #                 logs = hook.core_v1_client.read_namespaced_pod_log(
+    #                     name=pod.metadata.name,
+    #                     namespace=job["namespace"],
+    #                     container=container.name,
+    #                     tail_lines=200,
+    #                 )
+    #                 LOGGER.info(
+    #                     "Worker logs for pod %s container %s:\n%s",
+    #                     pod.metadata.name,
+    #                     container.name,
+    #                     logs,
+    #                 )
+    #     except Exception:
+    #         LOGGER.exception("Could not retrieve logs for training Job %s", job["job_name"])
 
-        if failed:
-            raise AirflowFailException(
-                f"Training Job {job['job_name']} failed: {failed.reason or 'unknown reason'}; "
-                f"{failed.message or 'see worker logs'}"
-            )
-        return PokeReturnValue(is_done=True, xcom_value={**job, "status": "succeeded"})
+    #     if failed:
+    #         raise AirflowFailException(
+    #             f"Training Job {job['job_name']} failed: {failed.reason or 'unknown reason'}; "
+    #             f"{failed.message or 'see worker logs'}"
+    #         )
+    #     return PokeReturnValue(is_done=True, xcom_value={**job, "status": "succeeded"})
 
     request = validate_request()
     ingestion = verify_ingestion(request["as_of"])
     submitted_job = submit_training(request, ingestion)
-    wait_for_training(submitted_job)
+    # wait_for_training(submitted_job)
 
 
 promiseops_training()

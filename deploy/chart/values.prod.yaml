@@ -4,6 +4,11 @@
 
 replicaCount: 2
 
+# g02-prod already has a platform-managed headless promiseops-metrics Service.
+# Do not try to import it into this Helm release or delete/replace it.
+metricsService:
+  create: false
+
 # image.digest must be injected by CI: helm upgrade ... --set image.digest=sha256:<real>
 # Do not commit a digest here; keep it empty to force CI to supply it.
 

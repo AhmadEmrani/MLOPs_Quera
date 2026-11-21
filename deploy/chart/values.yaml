@@ -12,6 +12,10 @@ image:
 serviceAccount:
   name: promiseops-api
 
+# Create a headless metrics Service by default; production reuses the existing platform Service.
+metricsService:
+  create: true
+
 # Name of the registry pull secret pre-created by platform staff.
 imagePullSecrets:
   - name: registry-pull
