@@ -1,0 +1,35 @@
+# Read-only diagnosis of the failed staging deploy. Only get/describe. No secret data (names only).
+inspect-deploy-failure:
+  needs: []
+  stage: inspect
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -u
+      TEAM_NAME="${TEAM:-g02}"
+      NAMESPACE="${TEAM_NAME}-staging"
+      kubectl -n "$NAMESPACE" describe deployment promiseops || true
+      kubectl -n "$NAMESPACE" get rs,events --sort-by=.lastTimestamp || true
+      kubectl -n "$NAMESPACE" get serviceaccounts || true
+      kubectl -n "$NAMESPACE" get secrets -o custom-columns='NAME:.metadata.name,TYPE:.type' || true
+      helm -n "$NAMESPACE" status promiseops || true
+
+inspect-deploy-rs:
+  needs: []
+  stage: inspect
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -u
+      TEAM_NAME="${TEAM:-g02}"
+      NAMESPACE="${TEAM_NAME}-staging"
+      kubectl -n "$NAMESPACE" describe rs -l app=promiseops || true
+      kubectl -n "$NAMESPACE" get events || true
+      kubectl -n "$NAMESPACE" get serviceaccounts || true
+      kubectl -n "$NAMESPACE" get secret registry-pull -o custom-columns='NAME:.metadata.name,TYPE:.type' || true

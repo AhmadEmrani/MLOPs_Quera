@@ -1,0 +1,40 @@
+helm-validate:
+  stage: test
+  needs: []
+  script:
+    - command -v helm >/dev/null || { echo "helm not found in CI_TOOLBOX_IMAGE"; exit 1; }
+    - |
+      set -eu
+      DUMMY_DIGEST="sha256:$(python -c 'print("1" * 64)')"
+      for environment in staging prod; do
+        helm lint --strict deploy/chart \
+          --values "deploy/chart/values.${environment}.yaml" \
+          --set-string "image.digest=${DUMMY_DIGEST}" \
+          --set-string "image.repository=${CI_REGISTRY_IMAGE}/app"
+        helm template "promiseops-${environment}" deploy/chart \
+          --values "deploy/chart/values.${environment}.yaml" \
+          --set-string "image.digest=${DUMMY_DIGEST}" \
+          --set-string "image.repository=${CI_REGISTRY_IMAGE}/app" \
+          > "/tmp/promiseops-${environment}.yaml"
+      done
+      STAGING=/tmp/promiseops-staging.yaml
+      PROD=/tmp/promiseops-prod.yaml
+      grep -q 'kind: CronJob' "$PROD"
+      if grep -q 'kind: CronJob' "$STAGING"; then
+        echo "Scoring CronJob is production-only" >&2
+        exit 1
+      fi
+      grep -q 'maxReplicas: 3' "$PROD"
+      grep -q 'minReplicas: 2' "$PROD"
+      grep -q 'terminationGracePeriodSeconds: 45' "$PROD"
+      grep -q 'sleep 10' "$PROD"
+      grep -q 'concurrencyPolicy: Forbid' "$PROD"
+      [ "$(grep -c '^  type: ClusterIP$' "$PROD")" -ge 2 ]
+      if grep -Eq '^kind: (Namespace|Role|RoleBinding|ClusterRole|ClusterRoleBinding|Ingress|NetworkPolicy|PodDisruptionBudget)$|^[[:space:]]+hostPath:|^[[:space:]]+privileged: true|^[[:space:]]+type: (NodePort|LoadBalancer)$' "$STAGING" "$PROD"; then
+        echo "Rendered chart contains a staff-managed or prohibited resource" >&2
+        exit 1
+      fi
+      if grep -E '^[[:space:]]*image:' "$STAGING" "$PROD" | grep -v '@sha256:'; then
+        echo "Rendered chart contains a non-digest image" >&2
+        exit 1
+      fi
