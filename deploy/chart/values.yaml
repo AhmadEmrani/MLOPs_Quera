@@ -3,7 +3,7 @@
 replicaCount: 1
 
 image:
-  repository: registry.example.com/g02/promiseops/app
+  repository: registry.mlops.qbootcamp.ir/qbc13/g02/promiseops/app
   # Empty string forces the required() check in promiseops.image helper to fail fast.
   # CI must supply the real digest with: --set image.digest=sha256:<64hex>
   digest: ""
@@ -21,11 +21,8 @@ service:
   port: 80
   # containerPort is fixed at 8080 (Dockerfile / Uvicorn).
 
-# README budget: 3 CPU / 3 GiB for prod.
-# 3 HPA replicas × 750m = 2.25 CPU + 1 surge = 3 CPU; 3 × 768Mi = 2.25 GiB – both fit.
-# If batchJob is also enabled in prod, the batch pod (750m/768Mi) pushes totals to
-# 3.75 CPU / 3.75 GiB – over budget. Keep batchJob.enabled: false in prod until
-# quota is raised or limits are renegotiated with platform staff.
+# Production worst case is three API replicas plus one scoring job (3 CPU / 3 GiB).
+# CI waits for scoring to finish before a rollout adds its surge replica.
 resources:
   requests:
     cpu: 250m
@@ -66,17 +63,16 @@ hpa:
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
 
-pdb:
-  # Rendered only when replicaCount > 1; disable if cluster policy prohibits PDBs.
-  enabled: true
-
 batchJob:
   enabled: false
+  suspend: false
   schedule: "0 2 * * *"
   activeDeadlineSeconds: 3600
   backoffLimit: 2
-  # args passed to the container. Update once the CLI subcommand is implemented.
-  args: ["batch"]
+  # Kubernetes command overrides the API image ENTRYPOINT for the scoring process.
+  command: ["/opt/venv/bin/python", "-m", "promiseops.scheduled_batch"]
+  args: []
+  lookbackHours: 24
   resources:
     requests:
       cpu: 500m

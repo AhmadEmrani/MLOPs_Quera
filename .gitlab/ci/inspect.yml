@@ -29,13 +29,24 @@ inspect-api-endpoint:
         for area in staging prod; do
           namespace="${TEAM}-${area}"
           echo
-          echo "=== ${area}: services and endpoints ==="
-          kubectl get services,endpoints -n "$namespace" \
-            -o custom-columns='KIND:.kind,NAME:.metadata.name,TYPE:.spec.type,CLUSTER-IP:.spec.clusterIP,PORTS:.spec.ports[*].port,ENDPOINTS:.subsets[*].addresses[*].ip' \
-            || echo "Could not list services/endpoints in ${namespace}"
-          echo "=== ${area}: deployments, pods, HPA, PDB, CronJobs ==="
-          kubectl get deployments,pods,hpa,pdb,cronjobs -n "$namespace" -o wide \
-            || echo "Some workload resources unavailable in ${namespace}"
+          echo "=== ${area}: Services (the API should have a ClusterIP Service) ==="
+          kubectl get services -n "$namespace" -o wide \
+            || echo "Cannot list Services in ${namespace}"
+          echo "=== ${area}: Service endpoints ==="
+          kubectl get endpoints -n "$namespace" -o wide \
+            || echo "Cannot list Endpoints in ${namespace}; ask staff whether read access can be granted"
+          echo "=== ${area}: Deployments ==="
+          kubectl get deployments -n "$namespace" -o wide \
+            || echo "Cannot list Deployments in ${namespace}"
+          echo "=== ${area}: Pods ==="
+          kubectl get pods -n "$namespace" -o wide \
+            || echo "Cannot list Pods in ${namespace}"
+          echo "=== ${area}: HPA ==="
+          kubectl get hpa -n "$namespace" -o wide \
+            || echo "Cannot list HPA in ${namespace}"
+          echo "=== ${area}: CronJobs ==="
+          kubectl get cronjobs -n "$namespace" -o wide \
+            || echo "Cannot list CronJobs in ${namespace}"
           echo "=== ${area}: deployed image references ==="
           kubectl get deployments -n "$namespace" \
             -o custom-columns='DEPLOYMENT:.metadata.name,IMAGES:.spec.template.spec.containers[*].image' \
@@ -48,10 +59,27 @@ inspect-api-endpoint:
           kubectl get secret -n "$namespace" \
             -o go-template='{{range .items}}{{.metadata.name}}{{" keys="}}{{range $key, $_ := .data}}{{$key}} {{end}}{{"\n"}}{{end}}' \
             || echo "Cannot list Secret metadata in ${namespace}"
+          echo "=== ${area}: pre-created service accounts ==="
+          kubectl get serviceaccounts -n "$namespace" \
+            -o custom-columns='NAME:.metadata.name,IMAGE-PULL-SECRETS:.imagePullSecrets[*].name' \
+            || echo "Cannot list service accounts in ${namespace}"
           echo "=== ${area}: selected resource permissions ==="
-          for resource in services endpoints deployments pods hpa ingress secrets; do
+          for resource in services endpoints deployments pods hpa cronjobs jobs secrets serviceaccounts; do
             printf '%s: ' "$resource"
             kubectl auth can-i get "$resource" -n "$namespace" || true
+          done
+          echo "=== ${area}: deployment permissions needed by the pipeline ==="
+          printf 'list jobs: '
+          kubectl auth can-i list jobs -n "$namespace" || true
+          for resource in cronjobs deployments services horizontalpodautoscalers; do
+            for verb in get list create update patch; do
+              printf '%s %s: ' "$verb" "$resource"
+              kubectl auth can-i "$verb" "$resource" -n "$namespace" || true
+            done
+          done
+          for verb in get list create update delete; do
+            printf '%s secrets (Helm release storage): ' "$verb"
+            kubectl auth can-i "$verb" secrets -n "$namespace" || true
           done
         done
         echo

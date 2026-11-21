@@ -45,11 +45,17 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
-          envFrom:
-            # TODO(ops): replace with explicit secretKeyRef per key once platform
-            # confirms PROMISEOPS_API_KEY and PROMISEOPS_DATABASE_URL key names.
-            - secretRef:
-                name: {{ .Values.runtimeConfig.secretName }}
+          env:
+            - name: PROMISEOPS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeConfig.secretName }}
+                  key: PROMISEOPS_API_KEY
+            - name: PROMISEOPS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeConfig.secretName }}
+                  key: PROMISEOPS_DATABASE_URL
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness.path }}

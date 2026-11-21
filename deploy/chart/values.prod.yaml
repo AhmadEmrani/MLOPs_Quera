@@ -1,7 +1,6 @@
-# Production – namespace budget: 3 CPU / 3 GiB
-# API worst-case: 3 HPA replicas × 750m + 1 surge pod = 3 CPU / 3 × 768Mi + 768Mi = 3 GiB (fits exactly).
-# batchJob is disabled: enabling it adds 750m/768Mi and exceeds both quotas.
-# Re-enable only after confirming quota increase with platform staff.
+# Production – namespace budget: 3 CPU / 3 GiB.
+# Three API replicas plus one scoring Job fit exactly; production CI suspends
+# the CronJob and waits for active scoring before a rollout adds its surge Pod.
 
 replicaCount: 2
 
@@ -22,5 +21,8 @@ hpa:
   maxReplicas: 3
   targetCPUUtilizationPercentage: 70
 
-# batchJob intentionally left at base default (enabled: false).
-# See budget note above.
+# 3 API replicas at 750m/768Mi plus one scoring Job at 750m/768Mi fit
+# exactly within the 3 CPU / 3 GiB quota. CI waits for scoring to finish
+# before beginning a rolling update, whose surge pod needs the same budget.
+batchJob:
+  enabled: true
