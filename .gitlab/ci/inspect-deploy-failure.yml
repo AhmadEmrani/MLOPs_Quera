@@ -1,4 +1,4 @@
-# Read-only diagnosis of the failed staging deploy. Only get/describe. No secret data (names only).
+# Read-only diagnosis of failed staging rollout. Do not read or print Secret values.
 inspect-deploy-failure:
   needs: []
   stage: inspect
@@ -11,10 +11,24 @@ inspect-deploy-failure:
       set -u
       TEAM_NAME="${TEAM:-g02}"
       NAMESPACE="${TEAM_NAME}-staging"
+      echo "=== Deployment ==="
       kubectl -n "$NAMESPACE" describe deployment promiseops || true
-      kubectl -n "$NAMESPACE" get rs,events --sort-by=.lastTimestamp || true
-      kubectl -n "$NAMESPACE" get serviceaccounts || true
+      echo "=== Deployment conditions (including full failure messages) ==="
+      kubectl -n "$NAMESPACE" get deployment promiseops -o jsonpath='{range .status.conditions[*]}{.type}{" status="}{.status}{" reason="}{.reason}{" message="}{.message}{"\n"}{end}' || true
+      echo "=== ReplicaSets ==="
+      kubectl -n "$NAMESPACE" get rs -l app=promiseops -o wide || true
+      echo "=== ReplicaSet conditions ==="
+      kubectl -n "$NAMESPACE" get rs -l app=promiseops -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}{" status="}{.status}{" reason="}{.reason}{" message="}{.message}{"\n"}{end}{end}' || true
+      kubectl -n "$NAMESPACE" describe rs -l app=promiseops || true
+      echo "=== Events ==="
+      kubectl -n "$NAMESPACE" get events || true
+      echo "=== Pods ==="
+      kubectl -n "$NAMESPACE" get pods -l app=promiseops -o wide || true
+      echo "=== ServiceAccount read permission ==="
+      kubectl auth can-i get serviceaccounts -n "$NAMESPACE" || true
+      echo "=== Secret names and types only ==="
       kubectl -n "$NAMESPACE" get secrets -o custom-columns='NAME:.metadata.name,TYPE:.type' || true
+      echo "=== Helm status ==="
       helm -n "$NAMESPACE" status promiseops || true
 
 inspect-deploy-rs:
@@ -29,7 +43,9 @@ inspect-deploy-rs:
       set -u
       TEAM_NAME="${TEAM:-g02}"
       NAMESPACE="${TEAM_NAME}-staging"
+      echo "=== ReplicaSet conditions (including full failure messages) ==="
+      kubectl -n "$NAMESPACE" get rs -l app=promiseops -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}{" status="}{.status}{" reason="}{.reason}{" message="}{.message}{"\n"}{end}{end}' || true
       kubectl -n "$NAMESPACE" describe rs -l app=promiseops || true
       kubectl -n "$NAMESPACE" get events || true
-      kubectl -n "$NAMESPACE" get serviceaccounts || true
+      kubectl auth can-i get serviceaccounts -n "$NAMESPACE" || true
       kubectl -n "$NAMESPACE" get secret registry-pull -o custom-columns='NAME:.metadata.name,TYPE:.type' || true

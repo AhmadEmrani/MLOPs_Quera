@@ -1,9 +1,21 @@
 # PromiseOps G02
 # All CI jobs are loaded from local YAML files.
 
-stages: [test, build, deploy_staging, model_release, model_image, deploy_model_staging, deploy_prod, sync, inspect]
+stages:
+  [
+    test,
+    build,
+    deploy_staging,
+    model_release,
+    model_image,
+    deploy_model_staging,
+    deploy_prod,
+    sync,
+    inspect,
+  ]
 variables:
   RUN_MODEL_RELEASE: "false"
+  PROMISEOPS_SMOKE_ORDER_ID: "1ff217aa612f6cd7c4255c9bfe931c8b"
   UV_OFFLINE: "1"
   UV_PYTHON_DOWNLOADS: never
   PIP_NO_INDEX: "1"

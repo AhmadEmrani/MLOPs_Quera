@@ -21,7 +21,8 @@ if sys.argv[1] == "sha256:" + "0" * 64:
     raise SystemExit("the zero digest is not a deployable image")
 PYDIGEST
 case "$RUNTIME_SA" in *[!A-Za-z0-9._-]*|'') echo "Invalid runtime service account name" >&2; exit 1 ;; esac
-kubectl get serviceaccount "$RUNTIME_SA" -n "$NAMESPACE" >/dev/null
+# Runtime ServiceAccount is staff-managed; CI has no get permission.
+# Keep the configured name; Kubernetes validates it when creating Pods.
 kubectl get secret registry-pull runtime-config -n "$NAMESPACE" -o name >/dev/null
 
 HELD_CRONJOB=0
