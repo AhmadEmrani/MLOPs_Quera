@@ -29,7 +29,12 @@ helm-validate:
       grep -q 'terminationGracePeriodSeconds: 45' "$PROD"
       grep -q 'sleep 10' "$PROD"
       grep -q 'concurrencyPolicy: Forbid' "$PROD"
-      [ "$(grep -c '^  type: ClusterIP$' "$PROD")" -ge 2 ]
+      # Staging owns both API + metrics Services; production owns only API Service.
+      # The pre-existing production metrics Service is managed outside this chart.
+      [ "$(grep -c '^  type: ClusterIP$' "$STAGING")" -eq 2 ]
+      [ "$(grep -c '^  type: ClusterIP$' "$PROD")" -eq 1 ]
+      [ "$(grep -c '^kind: Service$' "$STAGING")" -eq 2 ]
+      [ "$(grep -c '^kind: Service$' "$PROD")" -eq 1 ]
       if grep -Eq '^kind: (Namespace|Role|RoleBinding|ClusterRole|ClusterRoleBinding|Ingress|NetworkPolicy|PodDisruptionBudget)$|^[[:space:]]+hostPath:|^[[:space:]]+privileged: true|^[[:space:]]+type: (NodePort|LoadBalancer)$' "$STAGING" "$PROD"; then
         echo "Rendered chart contains a staff-managed or prohibited resource" >&2
         exit 1
