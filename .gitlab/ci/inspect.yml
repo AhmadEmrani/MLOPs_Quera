@@ -168,3 +168,59 @@ inspect-training-failure:
           --tail=120 \
           --timestamps || true
       done
+
+# Read-only inspection of production resource capacity.
+inspect-prod-resources:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -u
+
+      NAMESPACE="${TEAM:-g02}-prod"
+
+      echo "=================================="
+      echo "Production Resource Inspection"
+      echo "Namespace: $NAMESPACE"
+      echo "=================================="
+
+      echo ""
+      echo "=== ResourceQuota permissions ==="
+      kubectl auth can-i list resourcequotas -n "$NAMESPACE" || true
+
+      echo ""
+      echo "=== ResourceQuota ==="
+      if kubectl auth can-i list resourcequotas -n "$NAMESPACE" --quiet; then
+        kubectl get resourcequotas -n "$NAMESPACE" || true
+        kubectl describe resourcequotas -n "$NAMESPACE" || true
+      else
+        echo "Access denied: cannot list ResourceQuotas."
+      fi
+
+      echo ""
+      echo "=== LimitRange ==="
+      if kubectl auth can-i list limitranges -n "$NAMESPACE" --quiet; then
+        kubectl get limitranges -n "$NAMESPACE" || true
+        kubectl describe limitranges -n "$NAMESPACE" || true
+      else
+        echo "Access denied: cannot list LimitRanges."
+      fi
+
+      echo ""
+      echo "=== HPA ==="
+      kubectl get hpa -n "$NAMESPACE" -o wide || true
+
+      echo ""
+      echo "=== Deployment ==="
+      kubectl get deployments -n "$NAMESPACE" -o wide || true
+
+      echo ""
+      echo "=== Pods ==="
+      kubectl get pods -n "$NAMESPACE" -o wide || true
+
+      echo ""
+      echo "Inspection completed. No resources changed."
