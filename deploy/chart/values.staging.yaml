@@ -6,7 +6,3 @@ resources:
   limits:
     cpu: 500m
     memory: 512Mi
-
-# Batch CronJob is enabled in staging only. Prod keeps it disabled (see values.prod.yaml).
-batchJob:
-  enabled: true
