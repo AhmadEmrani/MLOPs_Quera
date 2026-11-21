@@ -41,6 +41,7 @@ class AppState:
         except Exception as error:  # noqa: BLE001 - service stays up, /predict returns 503
             self.model = self.release = None
             logger.error("model bundle not loaded: %s", type(error).__name__)
+        self.metrics.set_release(self.release if self.model is not None else None)
         self.ensure_schema()
 
     def open_connection(self):

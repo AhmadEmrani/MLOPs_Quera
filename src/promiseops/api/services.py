@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from contextlib import closing
 from datetime import UTC, datetime
 
@@ -20,15 +21,27 @@ def score(state: AppState, conn, order_id: str) -> dict:
     if frame.empty:
         raise OrderNotFoundError(order_id)
     features = frame.loc[:, list(FEATURE_COLUMNS)]
-    for name in FEATURE_COLUMNS:
-        if features[name].isna().any():
-            state.metrics.missing_features.labels(feature=name).inc()
-    column = list(model.classes_).index(1)
-    probability = float(model.predict_proba(features)[0][column])
-    if not math.isfinite(probability):
-        raise ValueError("non-finite probability")
+    state.metrics.observe_features(
+        {name: int(features[name].isna().sum()) for name in FEATURE_COLUMNS},
+        len(features),
+    )
+    started = time.perf_counter()
+    try:
+        column = list(model.classes_).index(1)
+        probability = float(model.predict_proba(features)[0][column])
+        if not math.isfinite(probability):
+            raise ValueError("non-finite probability")
+    except Exception:
+        state.metrics.inference_errors.inc()
+        raise
+    finally:
+        state.metrics.inference_latency.observe(time.perf_counter() - started)
+    # Preserve the API's existing clipping behavior and observe the served risk.
+    probability = min(1.0, max(0.0, probability))
+    state.metrics.inferences.inc()
+    state.metrics.risk.observe(probability)
     return {
-        "risk_probability": min(1.0, max(0.0, probability)),
+        "risk_probability": probability,
         "model_version": str(release["model_version"]),
     }
 
