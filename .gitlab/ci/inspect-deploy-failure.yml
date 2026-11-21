@@ -49,3 +49,106 @@ inspect-deploy-rs:
       kubectl -n "$NAMESPACE" get events || true
       kubectl auth can-i get serviceaccounts -n "$NAMESPACE" || true
       kubectl -n "$NAMESPACE" get secret registry-pull -o custom-columns='NAME:.metadata.name,TYPE:.type' || true
+
+# RBAC-aware, read-only inspection of runtime identities. Does not create Pods.
+# If the deploy identity may CREATE Pods, use server-side dry-run admission
+# to verify known candidate service account names. This writes no cluster objects.
+inspect-runtime-serviceaccount:
+  needs: []
+  stage: inspect
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -u
+      set +x
+      TEAM_NAME="${TEAM:-g02}"
+      case "$TEAM_NAME" in g0[1-7]) ;; *) echo "Invalid TEAM" >&2; exit 1 ;; esac
+      CONFIGURED_SA="${PROMISEOPS_RUNTIME_SERVICE_ACCOUNT:-promiseops-api}"
+      case "$CONFIGURED_SA" in *[!A-Za-z0-9._-]*|'') echo "Invalid ServiceAccount name" >&2; exit 1 ;; esac
+
+      echo "=== CI identity ==="
+      kubectl auth whoami || true
+      echo "=== Candidate runtime names (NOT verified names) ==="
+      echo "Chart/CI configured: ${CONFIGURED_SA}"
+      echo "Kubernetes standard name: default"
+      echo "An existing Deployment field is only configuration; it is NOT proof of ServiceAccount existence."
+
+      DEPLOYED_IMAGE="$(kubectl -n "${TEAM_NAME}-staging" get deployment promiseops -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+      for area in staging prod; do
+        NAMESPACE="${TEAM_NAME}-${area}"
+        echo "=== ${NAMESPACE}: ServiceAccount RBAC ==="
+        CAN_GET="$(kubectl auth can-i get serviceaccounts -n "$NAMESPACE" 2>/dev/null || echo no)"
+        CAN_LIST="$(kubectl auth can-i list serviceaccounts -n "$NAMESPACE" 2>/dev/null || echo no)"
+        CAN_CREATE_PODS="$(kubectl auth can-i create pods -n "$NAMESPACE" 2>/dev/null || echo no)"
+        echo "get serviceaccounts: ${CAN_GET}"
+        echo "list serviceaccounts: ${CAN_LIST}"
+        echo "create pods (required only for dry-run admission check): ${CAN_CREATE_PODS}"
+        if [ "$CAN_LIST" = yes ]; then
+          kubectl -n "$NAMESPACE" get serviceaccounts -o custom-columns='NAME:.metadata.name' || true
+        else
+          echo "ServiceAccount names CANNOT be enumerated with this CI identity."
+        fi
+
+        echo "=== ${NAMESPACE}: workload-declared ServiceAccounts (not existence proof) ==="
+        kubectl -n "$NAMESPACE" get deployments -o custom-columns='NAME:.metadata.name,DECLARED-SA:.spec.template.spec.serviceAccountName' || true
+        kubectl -n "$NAMESPACE" get cronjobs -o custom-columns='NAME:.metadata.name,DECLARED-SA:.spec.jobTemplate.spec.template.spec.serviceAccountName' || true
+        kubectl -n "$NAMESPACE" get pods -o custom-columns='NAME:.metadata.name,ACTUAL-SA:.spec.serviceAccountName,PHASE:.status.phase' || true
+
+        echo "=== ${NAMESPACE}: recent admission/failure events ==="
+        kubectl -n "$NAMESPACE" get events --field-selector type=Warning || true
+
+        if [ "$CAN_CREATE_PODS" != yes ] || [ -z "$DEPLOYED_IMAGE" ]; then
+          echo "Server-side Pod admission probe unavailable (no create-pods permission or staging image)."
+          echo "Use staff-confirmed ServiceAccount name or a normal authorized staging deployment to verify."
+          continue
+        fi
+
+        echo "=== ${NAMESPACE}: server-side DRY RUN for known candidates ==="
+        for SA_NAME in default "$CONFIGURED_SA"; do
+          echo "Candidate ${SA_NAME}:"
+          if kubectl -n "$NAMESPACE" create --dry-run=server -o name -f - <<EOF
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: promiseops-sa-admission-probe
+        labels:
+          app: promiseops-sa-admission-probe
+      spec:
+        serviceAccountName: ${SA_NAME}
+        automountServiceAccountToken: false
+        imagePullSecrets:
+          - name: registry-pull
+        restartPolicy: Never
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 10001
+          seccompProfile:
+            type: RuntimeDefault
+        containers:
+          - name: api
+            image: ${DEPLOYED_IMAGE}
+            command: ["/bin/true"]
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                cpu: 50m
+                memory: 32Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities:
+                drop: ["ALL"]
+      EOF
+          then
+            echo "DRY RUN accepted ${SA_NAME} (no Pod created)."
+          else
+            echo "DRY RUN rejected ${SA_NAME}; inspect the admission error above. No Pod created."
+          fi
+        done
+      done
+      echo "Inspection complete. No Kubernetes resources were created or changed."
