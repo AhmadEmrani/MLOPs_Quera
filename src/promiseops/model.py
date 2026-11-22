@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sklearn.base import BaseEstimator
 
 from promiseops.data import build_features, training_snapshot, training_source_lineage
+from promiseops.feature_lineage import training_reference
 from promiseops.metrics import cohort_hash
 from promiseops.model_pipeline.bundle import artifact_sha256, save_bundle
 from promiseops.model_pipeline.candidates import (
@@ -415,12 +416,26 @@ def train_candidate(
 
     train_stats = _cohort_stats(split.train_labels, split.train_order_ids)
     validation_stats = _cohort_stats(split.validation_labels, split.validation_order_ids)
+    # The training cohort defines the frozen drift baseline; validation and
+    # holdout must not influence its distribution parameters.
+    reference_path = output_root / "feature_reference.json"
+    reference_data = training_reference(
+        split.train_rows,
+        feature_contract_sha256=feature_contract_sha256,
+        train_end=train_cutoff,
+        feature_aggregation_as_of=evaluation_time,
+        train_cohort_hash=train_stats["cohort_hash"],
+        dataset_identity=dataset_id,
+    )
+    reference_sha256 = _write_json(reference_path, reference_data)
     manifest_data = {
         "manifest_version": 1,
         "dataset_identity": dataset_id,
         "dataset_fingerprint": dataset_fingerprint,
         "schema_identity": schema_identity,
         "feature_contract_sha256": feature_contract_sha256,
+        "feature_reference_sha256": reference_sha256,
+        "feature_reference_artifact": "monitoring/feature_reference.json",
         "source_commit": commit,
         "train_end": train_cutoff.isoformat(),
         "validation_end": validation_cutoff.isoformat(),
@@ -464,6 +479,8 @@ def train_candidate(
                 "schema_identity": schema_identity,
                 "feature_contract_file": "feature_contract.json",
                 "feature_contract_sha256": feature_contract_sha256,
+                "feature_reference_sha256": reference_sha256,
+                "feature_reference_artifact": "monitoring/feature_reference.json",
                 "dataset_manifest_file": "dataset_manifest.json",
                 "dataset_manifest_sha256": dataset_manifest_sha256,
                 "train_end": train_cutoff,
@@ -500,6 +517,7 @@ def train_candidate(
             "dataset_sha256": dataset_fingerprint,
             "schema_identity": schema_identity,
             "feature_contract_sha256": feature_contract_sha256,
+            "feature_reference_sha256": reference_sha256,
             "dataset_manifest_sha256": dataset_manifest_sha256,
             "artifact_sha256": str(manifest["artifact_sha256"]),
             "train_cohort_hash": train_stats["cohort_hash"],
@@ -539,6 +557,7 @@ def train_candidate(
                 "dataset_fingerprint": dataset_fingerprint,
                 "schema_identity": schema_identity,
                 "feature_contract_sha256": feature_contract_sha256,
+                "feature_reference_sha256": reference_sha256,
                 "dataset_manifest_sha256": dataset_manifest_sha256,
                 "model_version": manifest["model_version"],
                 "artifact_sha256": manifest["artifact_sha256"],
@@ -559,6 +578,7 @@ def train_candidate(
                 f"candidates/{name}/release.json": bundle_dir / "release.json",
                 f"candidates/{name}/dataset_manifest.json": bundle_dir / "dataset_manifest.json",
                 f"candidates/{name}/feature_contract.json": bundle_dir / "feature_contract.json",
+                "monitoring/feature_reference.json": reference_path,
             },
             model=fitted_model,
             input_example=split.train_rows.loc[:, FEATURE_COLUMNS].head(5),

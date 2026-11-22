@@ -224,3 +224,15 @@ inspect-prod-resources:
 
       echo ""
       echo "Inspection completed. No resources changed."
+
+      echo "=== HPA DETAILS AND SCALE HISTORY ==="
+      kubectl describe hpa promiseops -n "$NAMESPACE" || true
+
+      echo "=== LAST SCALE TIME ==="
+      kubectl get hpa promiseops -n "$NAMESPACE" \
+        -o jsonpath='{.status.lastScaleTime}{"\n"}' || true
+
+      echo "=== HPA EVENTS ==="
+      kubectl get events -n "$NAMESPACE" \
+        --field-selector involvedObject.kind=HorizontalPodAutoscaler,involvedObject.name=promiseops \
+        --sort-by=.lastTimestamp || true

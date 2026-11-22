@@ -1,53 +1,39 @@
-# PromiseOps: مسئولیت یک سرویس واقعی را تحویل بگیرید
+# PromiseOps — Feature Lineage & Persistence (Phase 2)
 
-شما تیم MLOps شرکت «PromiseOps» هستید؛ یک بازار آنلاین که سفارش‌های چند فروشنده را به مشتری‌ها می‌رساند. تیم عملیات هر روز فقط می‌تواند حدود ۱۰ درصد سفارش‌ها را پیگیری کند. تماس با فروشنده، بررسی مسیر ارسال و خبر دادن به مشتری هزینه دارد. وظیفهٔ شما این است که هنگام تأیید سفارش، احتمال دیر رسیدن آن را برآورد کنید و این قابلیت را به یک سرویس قابل اتکا تبدیل کنید.
+Adds **atomic, deduplicated PostgreSQL feature observations** for freshly served
+predictions, plus **training-only reference distributions in MLflow**.
 
-خروجی پروژه فقط فایل مدل یا نوت‌بوک نیست. تیم بعدی باید بتواند دادهٔ جدید را وارد کند، مدل را بازتولید کند، سرویس را منتشر کند، خطا را تشخیص دهد و در صورت نیاز به نسخهٔ سالم برگردد. روز آخر باید نشان بدهید این چرخه واقعاً کار می‌کند.
+Built against the reviewed `src/promiseops/data.py`, `api/services.py`,
+`model.py`, and existing API/observability test fixtures. Run the complete
+project suite after applying, as the live PostgreSQL/MLflow environment has
+not been exercised here. The installer refuses
+unknown source layouts rather than overwriting entire source files.
 
-## شرایط کار
+## Installation on a feature branch
 
-پروژه ۱۰ روز است. انتظار کار روزانهٔ هر نفر ۴ تا ۶ ساعت است. هفت گروه مسئلهٔ یکسان دارند و هر گروه محیط خصوصی خودش را دریافت می‌کند: مخزن و Registry در GitLab، پایگاه داده، Airflow، MLflow، Grafana و namespaceهای Kubernetes. نصب و مدیریت این سرویس‌های پایه با تیم آموزشی است. پیاده‌سازی pipeline، مدل، DAG، API، image، chart، CI و پایش با شماست.
+```bash
+cd /path/to/promiseops
+unzip -o promiseops-feature-lineage-persistence.zip -d .
+python ci/apply_feature_lineage.py --check
+python ci/apply_feature_lineage.py
+# Optional manual, read-only GitLab inspection job:
+python ci/install_feature_lineage_inspect.py
 
-دسترسی شما به namespaceهای گروه خودتان محدود است. SSH سرور، دسترسی مدیر کلاستر و تغییر NetworkPolicy یا سهمیه‌ها لازم نیست. برای مشکل زیرساخت تیکت بدهید؛ برای تغییر کد و عملیات گروه خودتان Merge Request بسازید. کارهای آموزش سنگین در صف اجرا می‌شوند و ممکن است منتظر بمانند. زمان انتظار صف را با زمان اجرای مدل اشتباه نگیرید.
+PYTHONPATH=src python -m pytest -q \
+  tests/test_feature_lineage.py \
+  tests/test_feature_persistence.py \
+  tests/test_feature_lineage_install.py \
+  tests/test_feature_inspect.py
+PYTHONPATH=src python -m pytest -q -rs
+git diff --check
+git diff --stat
+git status --short
+```
 
-## تصمیم کسب‌وکار و دامنهٔ داده
+**Do not run the database migration by copying a SQL command into production
+without checking the database role and change procedure.** See
+`docs/FEATURE_LINEAGE_PERSISTENCE.md` for requirements, SQL semantics,
+regression checks, code-only deployment, and safe inspection.
 
-برای هر سفارش، در لحظهٔ تأیید آن، احتمال دیر رسیدن را محاسبه می‌کنید. دیرکرد یعنی **تاریخ محلی تحویل به مشتری، بعد از تاریخ وعدهٔ تحویل باشد**؛ منطقهٔ زمانی `America/Sao_Paulo` است. مقایسهٔ ساعت‌ها در یک روز، برچسب دیرکرد نمی‌سازد.
-
-دامنهٔ ارزیابی این نسخه، سفارش‌های تکمیل‌شده با تاریخ‌های معتبر است. این مدل خطر لغو سفارش را پوشش نمی‌دهد و ادعای پوشش همهٔ سفارش‌های واقعی بازار را نباید داشته باشید. وضعیت نهایی سفارش فقط برای ساخت cohort توسط تیم آموزشی استفاده می‌شود و جزو ورودی مدل نیست.
-
-کل داده‌های آماده‌شدهٔ Olist از ابتدا در دسترس شماست. تقسیم زمانی train، validation و test و انتخاب بازهٔ شبیه‌سازی ورود داده با خود گروه است. برای نمایش چرخهٔ عملیاتی، داده‌های یک بازهٔ بعدی را مرحله‌به‌مرحله وارد کنید، پیش‌بینی‌ها را ذخیره کنید و سپس با نتیجهٔ تحویل ارزیابی کنید. زمان سفارش و زمان در دسترس بودن برچسب را رعایت کنید؛ دسترسی به کل داده مجوز استفاده از اطلاعات آینده نیست. نیازی به انتظار برای انتشار داده توسط تیم آموزشی ندارید.
-
-فایل‌های منبع، شناسه‌ها و کلیدهای رابطه‌ای دارند. ابتدا آن‌ها را در PostgreSQL وارد کنید. سفارش می‌تواند چند قلم کالا و چند ردیف پرداخت داشته باشد؛ join ساده‌ای که مبلغ سفارش را چند برابر کند پذیرفته نیست. batch خراب باید کامل رد و قرنطینه شود. اجرای دوبارهٔ همان batch، تعداد ردیف‌ها را تغییر نمی‌دهد. شناسهٔ یکسان با محتوای متفاوت خطاست.
-
-## چیزهایی که باید بسازید
-
-۱. **مسیر داده:** دریافت feed منتشرشده، کنترل checksum و schema، بررسی کلیدها و کیفیت، تراکنش کامل، ثبت receipt و اجرای دوبارهٔ امن. برای هر تصمیم زمانی توضیح بدهید چه چیزی در آن لحظه معلوم بوده است.
-
-۲. **مدل قابل دفاع:** حداقل دو رویکرد معنادار، baseline ساده، feature engineering بدون نشت اطلاعات و تقسیم زمانی. نتیجهٔ تحویل، زمان واقعی ارسال یا تحویل، review و وضعیت نهایی نباید predictor باشند. برچسب‌های train باید تا cutoff آموزش در دسترس شده باشند؛ قدیمی بودن خود سفارش کافی نیست. پیش‌پردازش باید همراه مدل ذخیره شود و مسیر feature در train و serving مشترک باشد.
-
-۳. **چرخهٔ مدل:** DAGهای Airflow برای ingestion و آموزش، ثبت experiment و artifact در MLflow و شناسنامهٔ قابل بازتولید مدل. schema، نسخهٔ کد، داده، cutoffها، معیارها و محیط اجرا باید مشخص باشند. آموزش در Job محدود و صف‌دار انجام می‌شود. scheduler را با fit سنگین اشغال نکنید.
-
-۴. **سرویس و خروجی عملیات:** قرارداد `POST /predict`، health و readiness جدا، خطای روشن برای سفارش ناموجود و ورودی نامعتبر، authentication و request ID. یک اجرای batch، فهرست اولویت‌دار ۱۰ درصد سفارش‌های cohort مشخص را تحویل بدهد. تعداد و cohort را در خروجی بنویسید تا فهرست قابل بررسی باشد.
-
-۵. **انتشار واقعی:** Docker image بازتولیدپذیر، تست‌های لازم، Helm chart، Service، probeها، منابع مشخص، دو replica در production و HPA با سقف سه replica. یک CronJob برای امتیازدهی دوره‌ای بسازید. Airflow مسئول گردش داده و مدل است؛ CronJob باید کار مشخص و مستقلی داشته باشد. ingress و سیاست‌های امنیتی را تیم آموزشی آماده می‌کند.
-
-۶. **CI و تغییر نسخه:** هر تغییر از pipeline تست عبور کند، image با digest مشخص ساخته شود، ابتدا staging بررسی شود و انتشار production تأیید دستی عضو مسئول گروه را بخواهد. مدل جدید باید روی همان cohort با champion مقایسه شود. رد شدن مدل ضعیف‌تر نتیجهٔ درست است. تغییر alias در MLflow نباید سرویس در حال اجرا را بی‌صدا عوض کند.
-
-۷. **پایش و بازآموزی:** نرخ درخواست، latency، خطا، readiness و نسخهٔ مدل؛ drift داده و کیفیت مدل با برچسب‌های واقعاً رسیده. تأخیر برچسب را در طراحی پنجرهٔ ارزیابی لحاظ کنید. علت پیشنهاد retraining را ثبت کنید. با هر نوسان کوچک آموزش تازه راه نیندازید. آموزش و ارزیابی می‌توانند خودکار باشند؛ انتشار production تأیید انسانی دارد.
-
-۸. **تحویل عملیات:** راه‌اندازی از ابتدا، rollback، توضیح وابستگی‌ها، محدودیت‌ها و گزارش رخداد. عضو دیگری از گروه باید بتواند با مستند شما نسخهٔ مشخصی را اجرا کند. secret، token و اطلاعات ورود نباید وارد Git، artifact عمومی، screenshot یا log شوند.
-
-## معیار موفقیت
-
-معیار اصلی `recall@10%` است: از تمام سفارش‌های دیررس cohort، چه سهمی در فهرست ۱۰ درصدی پیگیری قرار گرفته‌اند؟ `precision@10%`، PR-AUC و Brier را هم گزارش کنید. روش tie-breaking، اندازهٔ cohort و فراوانی کلاس مثبت را بنویسید. accuracy به‌تنهایی معیار مناسبی برای این تصمیم نیست.
-
-در آزمون عمومی، هر گروه باید ۳ دقیقه با نرخ ۱۰ درخواست در ثانیه کار کند؛ p95 حداکثر ۵۰۰ میلی‌ثانیه و خطای سمت سرور کمتر از ۱ درصد باشد. این آزمون با image و دادهٔ ثابت، پس از warm-up و در زمان اعلام‌شده انجام می‌شود. نمایش HPA آزمون جداگانه دارد و باید افزایش replica و برگشت آن را با شواهد نشان بدهید.
-
-## همکاری تیمی و تحویل روز آخر
-
-روز اول نقش‌ها و interfaceها را مشخص کنید: داده و قراردادها، مدل و ارزیابی، orchestration و lifecycle، سرویس و انتشار، پایش و عملیات. نقش‌ها می‌توانند بین نفرات ترکیب شوند؛ همه نباید منتظر تمام شدن نوت‌بوک مدل بمانند. API می‌تواند از روز اول با یک مدل ساده و قرارداد ثابت آماده شود.
-
-مخزن باید کد، تست‌ها، DAGها، chart، pipeline، راهنمای اجرا، گزارش مدل و runbook داشته باشد. دادهٔ خام، secret و image را در Git نگذارید. هر نفر باید commit و review معنادار داشته باشد و بتواند بخشی از سیستم و یک تصمیم خارج از بخش خودش را توضیح بدهد.
-
-۸۰ درصد نمرهٔ نهایی از خروجی گروه و ۲۰ درصد از مشارکت و دفاع فردی است. دسته‌های رخداد و بازهٔ تمرین از قبل اعلام می‌شوند؛ نمونهٔ دقیق خرابی ممکن است تازه باشد. frontend، Kafka، نصب کلاستر و آموزش توزیع‌شده جزو نیازمندی‌های این پروژه نیستند.
+No deployments, MLflow writes, or database changes happen from unzipping the
+package or running the source patcher.
