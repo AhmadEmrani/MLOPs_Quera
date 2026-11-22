@@ -41,3 +41,4 @@ include:
   - local: "/.gitlab/ci/inspect.yml"
   - local: "/.gitlab/ci/release.yml"
   - local: "/.gitlab/ci/inspect-deploy-failure.yml"
+  - local: "/.gitlab/ci/load.yml"
