@@ -1,11 +1,15 @@
 """No real PostgreSQL access, no modification of persistent application data."""
 
 from datetime import UTC, datetime
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from ci.select_load_orders import (
     SELECT_ORDERS_SQL,
+    main,
+    normalize_psycopg_dsn,
     cohort_hash,
     parse_aware_datetime,
     select_order_ids,
@@ -102,3 +106,45 @@ def test_ci_installer_is_idempotent_and_preserves_other_jobs():
     assert ENTRY in result
     assert result.index(ENTRY) < result.index('other: thing')
     assert add_include(result) == result
+
+
+def test_normalize_sqlalchemy_psycopg_url():
+    sqlalchemy_url = "postgresql+psycopg://example:password@pg:5432/promiseops?sslmode=prefer"
+    libpq_url = "postgresql://example:password@pg:5432/promiseops?sslmode=prefer"
+    assert normalize_psycopg_dsn(sqlalchemy_url) == libpq_url
+    assert normalize_psycopg_dsn(libpq_url) == libpq_url
+    assert normalize_psycopg_dsn("postgres://localhost/promiseops") == "postgres://localhost/promiseops"
+
+
+def test_main_converts_secret_dsn_before_connect_without_logging_it(tmp_path, monkeypatch, capsys):
+    """Regression for SQLSTATE=unavailable ProgrammingError in load-test CI."""
+    sqlalchemy_url = "postgresql+psycopg://runner:s3cret-unique@postgres:5432/promiseops"
+    passed = {}
+
+    class FakeContextConnection(FakeConnection):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_connect(dsn, **kwargs):
+        passed["dsn"] = dsn
+        passed["options"] = kwargs["options"]
+        return FakeContextConnection([(f"order-{i}",) for i in range(20)])
+
+    monkeypatch.setenv("PROMISEOPS_DATABASE_URL", sqlalchemy_url)
+    monkeypatch.setitem(sys.modules, "psycopg", SimpleNamespace(connect=fake_connect))
+    result = main([
+        "--validation-end", "2018-04-30T23:59:59-03:00",
+        "--as-of", "2018-06-29T23:59:59-03:00",
+        "--limit", "20", "--minimum", "20",
+        "--order-ids", str(tmp_path / "orders.json"),
+        "--summary", str(tmp_path / "summary.json"),
+    ])
+    assert result == 0
+    assert passed["dsn"].startswith("postgresql://")
+    assert "default_transaction_read_only=on" in passed["options"]
+    assert len(__import__("json").loads((tmp_path / "orders.json").read_text())) == 20
+    output = capsys.readouterr()
+    assert "s3cret-unique" not in output.out + output.err

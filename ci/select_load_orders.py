@@ -30,6 +30,18 @@ LIMIT %(limit)s
 """
 
 
+def normalize_psycopg_dsn(raw: str) -> str:
+    """Convert SQLAlchemy psycopg URLs into a libpq-compatible PostgreSQL URI.
+
+    Production's promiseops.data.get_connection already does this conversion.
+    Never log the input: it can include database username and password.
+    """
+    sqlalchemy_prefix = "postgresql+psycopg://"
+    if raw.startswith(sqlalchemy_prefix):
+        return "postgresql://" + raw[len(sqlalchemy_prefix):]
+    return raw
+
+
 def parse_aware_datetime(raw: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -97,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         # A hard read-only setting applies to ALL transactions, independent of
         # the permissions of the credential supplied by the platform.
         with psycopg.connect(
-            database_url,
+            normalize_psycopg_dsn(database_url),
             connect_timeout=10,
             options="-c default_transaction_read_only=on -c statement_timeout=30000",
         ) as connection:
