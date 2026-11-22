@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--order-ids", type=Path, required=True)
     parser.add_argument("--summary", type=Path, required=True)
     args = parser.parse_args(argv)
+    phase = "validate_parameters"
     try:
         validation_end = parse_aware_datetime(args.validation_end)
         as_of = parse_aware_datetime(args.as_of)
@@ -92,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 
         import psycopg
 
+        phase = "connect_postgres"
         # A hard read-only setting applies to ALL transactions, independent of
         # the permissions of the credential supplied by the platform.
         with psycopg.connect(
@@ -99,11 +101,14 @@ def main(argv: list[str] | None = None) -> int:
             connect_timeout=10,
             options="-c default_transaction_read_only=on -c statement_timeout=30000",
         ) as connection:
+            phase = "execute_selection_sql"
             selected = select_order_ids(connection, validation_end, as_of, args.limit)
 
+        phase = "validate_selected_cohort"
         if len(selected) < args.minimum:
             raise ValueError("not enough released post-validation orders in the selected window")
 
+        phase = "write_selection_report"
         args.order_ids.write_text(json.dumps(selected, ensure_ascii=False) + "\n", encoding="utf-8")
         args.order_ids.chmod(0o600)
         result = {
@@ -121,9 +126,21 @@ def main(argv: list[str] | None = None) -> int:
             f"validation_end={result['validation_end_utc']} as_of={result['as_of_utc']}"
         )
         return 0
-    except Exception as exc:  # noqa: BLE001 - never print connection strings or private IDs
-        print(f"Load cohort selection failed: {type(exc).__name__}; inspect cutoff, order availability, "
-              "database connectivity and read permissions.", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - never print DSNs, SQL parameters or order IDs
+        sqlstate = getattr(exc, "sqlstate", None)
+        sqlstate = sqlstate if isinstance(sqlstate, str) and len(sqlstate) == 5 else "unavailable"
+        diagnostic = (
+            f"Load cohort selection failed: phase={phase}; "
+            f"error_type={type(exc).__name__}; SQLSTATE={sqlstate}"
+        )
+        # Only expose a short PostgreSQL schema/permission error message. The
+        # SQL is fixed and parameterized, and these server messages do not
+        # include bound values or connection credentials.
+        if sqlstate in {"42P01", "42703", "42501", "42883", "42601", "42702"}:
+            primary = getattr(getattr(exc, "diag", None), "message_primary", None)
+            if isinstance(primary, str):
+                diagnostic += f"; pg_message={primary[:200]}"
+        print(diagnostic, file=sys.stderr)
         return 1
 
 
