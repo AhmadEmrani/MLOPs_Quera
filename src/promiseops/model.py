@@ -274,13 +274,21 @@ def train_candidate(
         if not order_ids:
             raise ValueError("no labeled orders are available for the selected validation window")
 
-        feature_rows = build_features(
-            connection,
-            order_ids,
-            as_of=evaluation_time,
-            labeled=True,
-            ensure_schema=False,
+        # PIT_GOLDEN_V3: no training features after train_end and no
+        # validation features after validation_end. Labels may mature later,
+        # but are never included in the feature vector.
+        train_features = build_features(
+            connection, order_ids, as_of=train_cutoff, label_as_of=evaluation_time,
+            labeled=True, ensure_schema=False,
         )
+        validation_features = build_features(
+            connection, order_ids, as_of=validation_cutoff,
+            label_as_of=evaluation_time, labeled=True, ensure_schema=False,
+        )
+        validation_features = validation_features.loc[
+            validation_features["approved_at"] > train_cutoff
+        ]
+        feature_rows = pd.concat((train_features, validation_features), ignore_index=True)
         validated_rows = validate_feature_rows(feature_rows, labeled=True)
         labeled_frame = pd.DataFrame([row.model_dump() for row in validated_rows])
         split = select_temporal_split(
@@ -423,7 +431,7 @@ def train_candidate(
         split.train_rows,
         feature_contract_sha256=feature_contract_sha256,
         train_end=train_cutoff,
-        feature_aggregation_as_of=evaluation_time,
+        feature_aggregation_as_of=train_cutoff,
         train_cohort_hash=train_stats["cohort_hash"],
         dataset_identity=dataset_id,
     )
@@ -455,6 +463,8 @@ def train_candidate(
             },
         },
         "source_lineage": source_lineage,
+        "temporal_feature_policy": "train_at_train_end_validation_at_validation_end_labels_at_as_of",
+        "legacy_outcome_availability_policy": "latest_outcome_receipt_conservative_bound",
         "test_policy": "untouched_not_used_in_training_or_selection",
     }
     dataset_manifest_path = output_root / "dataset_manifest.json"

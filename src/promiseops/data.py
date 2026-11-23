@@ -61,8 +61,12 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE TABLE IF NOT EXISTS outcomes (
     order_id VARCHAR(128) PRIMARY KEY REFERENCES orders(order_id),
     delivered_at TIMESTAMPTZ NOT NULL,
-    available_at TIMESTAMPTZ NOT NULL CHECK (available_at >= delivered_at)
+    available_at TIMESTAMPTZ NOT NULL CHECK (available_at >= delivered_at),
+    batch_available_at TIMESTAMPTZ
 );
+-- Add the source receipt watermark to existing databases. Legacy rows
+-- stay NULL because their exact per-order batch is not recoverable.
+ALTER TABLE outcomes ADD COLUMN IF NOT EXISTS batch_available_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS batch_receipts (
     batch_id VARCHAR(128) PRIMARY KEY,
@@ -442,10 +446,10 @@ def ingest_batch(connection, payload, *, as_of, expected_sha256=None):
                     else:
                         cur.execute(
                             """
-                            INSERT INTO outcomes (order_id, delivered_at, available_at)
-                            VALUES (%s, %s, %s)
+                            INSERT INTO outcomes (order_id, delivered_at, available_at, batch_available_at)
+                            VALUES (%s, %s, %s, %s)
                             """,
-                            (out.order_id, out.delivered_at, out.available_at),
+                            (out.order_id, out.delivered_at, out.available_at, batch.available_at),
                         )
 
             # د) ثبت رسید نهایی (Receipt) در همان تراکنش
@@ -497,7 +501,8 @@ FEATURE_COLUMNS = [
 
 
 def build_features(
-    connection, order_ids=None, *, as_of, labeled=False, ensure_schema: bool = True
+    connection, order_ids=None, *, as_of, labeled=False, ensure_schema: bool = True,
+    label_as_of: str | datetime | None = None,
 ) -> pd.DataFrame:
     """Aggregate relations without fan-out or outcome-derived features.
 
@@ -508,6 +513,9 @@ def build_features(
     if ensure_schema:
         init_db(raw_conn)
     as_of_utc = instant(as_of)
+    label_cutoff_utc = instant(label_as_of) if label_as_of is not None else as_of_utc
+    if label_cutoff_utc < as_of_utc:
+        raise ValueError("label_as_of must not precede feature as_of")
 
     # اگر لیست خاصی از order_idها داده شده، بررسی کنیم که خالی نباشد
     if order_ids is not None:
@@ -520,7 +528,25 @@ def build_features(
     else:
         order_ids_list = None
 
-    # کوئری SQL ضد Fan-out با استفاده از CTE (جدول‌های موقت مستقل)
+    # PIT_GOLDEN_V3: serving avoids even joining the outcomes table.
+    # For legacy outcomes without per-order receipt provenance, use the
+    # latest known outcome receipt as a conservative availability bound.
+    outcome_cols = (
+        "out.delivered_at, "
+        "GREATEST(out.available_at, COALESCE(out.batch_available_at, "
+        "(SELECT MAX(available_at) FROM batch_receipts WHERE kind = 'outcomes'))) "
+        "AS outcome_available_at"
+        if labeled else
+        "NULL::timestamptz AS delivered_at, NULL::timestamptz AS outcome_available_at"
+    )
+    outcome_join = (
+        "LEFT JOIN outcomes out ON t.order_id = out.order_id "
+        "AND GREATEST(out.available_at, COALESCE(out.batch_available_at, "
+        "(SELECT MAX(available_at) FROM batch_receipts WHERE kind = 'outcomes'))) "
+        "<= %(label_as_of)s"
+        if labeled else ""
+    )
+    # SQL fragments above are static and NOT constructed from input.
     query = """
     WITH target_orders AS (
         SELECT
@@ -598,21 +624,22 @@ def build_features(
         pi.primary_seller_state,
         pi.primary_category,
         pp.primary_payment_type,
-        out.delivered_at,
-        out.available_at AS outcome_available_at
+        __OUTCOME_COLS__
     FROM target_orders t
     JOIN item_agg ia ON t.order_id = ia.order_id
     JOIN primary_item pi ON t.order_id = pi.order_id
     JOIN payment_agg pa ON t.order_id = pa.order_id
     JOIN primary_payment pp ON t.order_id = pp.order_id
-    LEFT JOIN outcomes out
-      ON t.order_id = out.order_id
-     AND out.available_at <= %(as_of)s
+    __OUTCOME_JOIN__
     ORDER BY t.order_id ASC
     """
 
+    query = query.replace("__OUTCOME_COLS__", outcome_cols).replace("__OUTCOME_JOIN__", outcome_join)
+    params = {"as_of": as_of_utc, "order_ids": order_ids_list}
+    if labeled:
+        params["label_as_of"] = label_cutoff_utc
     with raw_conn.cursor() as cur:
-        cur.execute(query, {"as_of": as_of_utc, "order_ids": order_ids_list})
+        cur.execute(query, params)
         rows = cur.fetchall()
         colnames = [desc[0] for desc in cur.description]
 
@@ -727,12 +754,13 @@ def get_or_save_prediction(
                 INSERT INTO predictions (request_id, order_id, risk_probability, model_version)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (request_id) DO NOTHING
+                RETURNING order_id, risk_probability, model_version
                 """,
                 (request_id, order_id, risk_prob, model_ver),
             )
-            # rowcount is 0 for an idempotency race: never persist metadata from
-            # the losing computation, whose prediction was not committed.
-            inserted = cur.rowcount == 1
+            # RETURNING is empty only for a conflict (possibly concurrent).
+            inserted_row = cur.fetchone()
+            inserted = inserted_row is not None
             if inserted and feature_observation is not None:
                 snapshot = feature_observation
                 if not isinstance(snapshot, dict) or not isinstance(snapshot.get("features"), dict):
@@ -762,6 +790,13 @@ def get_or_save_prediction(
     except Exception:
         raw_conn.rollback()
         raise
+
+    if inserted_row is not None:
+        return {
+            "order_id": inserted_row[0], "request_id": request_id,
+            "risk_probability": float(inserted_row[1]),
+            "model_version": inserted_row[2],
+        }
 
     # دوباره از دیتابیس می‌خوانیم تا اگر دو درخواست همزمان (Race Condition) آمده بودند، جواب یکسان برگردد
     with raw_conn.cursor() as cur:

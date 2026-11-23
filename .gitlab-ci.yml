@@ -33,6 +33,7 @@ default:
     - mkdir -p "$HOME"
 
 include:
+  - local: "/.gitlab/ci/golden.yml"
   - local: "/.gitlab/ci/test.yml"
   - local: "/.gitlab/ci/helm.yml"
   - local: "/.gitlab/ci/staging-check.yml"

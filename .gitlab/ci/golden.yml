@@ -1,0 +1,38 @@
+# Golden feature-contract, parity and temporal-boundary checks.
+# No production database or deployed service is accessed by this file.
+golden-contracts:
+  stage: test
+  needs: []
+  script:
+    - set -eu
+    - cp -a /opt/promiseops/wheelhouse ./wheelhouse
+    - uv venv --python /usr/local/bin/python .golden-venv
+    - uv pip sync --python .golden-venv/bin/python --no-index --find-links wheelhouse --require-hashes requirements.lock
+    - uv pip install --python .golden-venv/bin/python --no-index --no-deps --no-build-isolation .
+    - .golden-venv/bin/python ci/run_golden_contracts.py
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - reports/golden/
+    reports:
+      junit: reports/golden/junit.xml
+
+# Explicitly opted-in MLflow evidence publication. Does not change models/aliases.
+# Protected MLflow secrets are needed only for this manual main-branch job.
+golden-mlflow-evidence:
+  stage: inspect
+  needs:
+    - job: golden-contracts
+      artifacts: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - set -eu
+    - 'test -n "${MLFLOW_TRACKING_URI:-}" || { echo "Missing protected MLFLOW_TRACKING_URI"; exit 1; }'
+    - cp -a /opt/promiseops/tracking-wheelhouse ./tracking-wheelhouse
+    - uv venv --python /usr/local/bin/python .golden-mlflow-venv
+    - uv pip sync --python .golden-mlflow-venv/bin/python --no-index --find-links tracking-wheelhouse --require-hashes requirements-tracking.lock
+    - .golden-mlflow-venv/bin/python ci/publish_golden_mlflow.py --report reports/golden/report.json

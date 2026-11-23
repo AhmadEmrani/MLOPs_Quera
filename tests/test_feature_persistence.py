@@ -34,6 +34,7 @@ class FakeCursor:
             req, order, risk, version = params
             if req not in self.db.predictions and req not in self.db.pending_predictions:
                 self.db.pending_predictions[req] = (order, risk, version)
+                self.one = (order, risk, version)  # INSERT ... RETURNING
                 self.rowcount = 1
         elif s.startswith("INSERT INTO prediction_feature_observations"):
             if self.db.fail_observation:
