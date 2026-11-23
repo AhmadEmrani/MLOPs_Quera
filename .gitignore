@@ -5,6 +5,7 @@ __pycache__/
 *.key
 *.kubeconfig
 data/
+/notebook/
 artifacts/
 .local-artifacts/
 .local-incumbent/

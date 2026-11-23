@@ -136,7 +136,19 @@ def rewrite_inspect(body: str) -> str:
     body = replace_once(body, INSPECT_OLD, INSPECT_NEW, "MLflow inspect preflight")
     m = re.search(r"^inspect-mlflow-direct:\n.*?(?=^[a-z][a-z0-9-]*:\n|\Z)", body, re.M | re.S)
     if m is None:
-        raise ValueError("Missing inspect-mlflow-direct anchor; do not overwrite unknown layout")
+        # A later, intentional CI cleanup replaced the old direct HTTP check
+        # and Kubernetes-discovery jobs with the shared SDK read probe. This
+        # is a supported *already-applied* layout, not a missing prerequisite.
+        # Never recreate deleted inspection jobs on a subsequent installer run.
+        consolidated = (
+            "inspect-mlflow-ci-access:\n" in body
+            and INSPECT_NEW in body
+            and "inspect-mlflow-k8s-discovery:" not in body
+            and "inspect-ci-config-presence:" not in body
+        )
+        if consolidated:
+            return body
+        raise ValueError("Missing MLflow direct probe outside the known consolidated CI layout")
     if m.group(0) != NEW_DIRECT:
         body = body[:m.start()] + NEW_DIRECT + body[m.end():]
     return body

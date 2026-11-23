@@ -144,9 +144,35 @@ def test_main_mlflow_jobs_use_shared_resolver():
     assert release.count(". ci/require_mlflow_ci_env.sh") >= 4
     assert "sh ci/setup_registry_env.sh" in release
     assert "# no synthetic production deployment" not in release
-    assert inspect.count(". ci/require_mlflow_ci_env.sh") >= 2
-    assert "python ci/check_mlflow_http.py" in inspect
+    # Inspect jobs were intentionally consolidated after the first MLflow fix.
+    # Keep the live SDK read check; do not bring obsolete discovery jobs back.
+    assert "inspect-mlflow-ci-access:" in inspect
+    assert inspect.count(". ci/require_mlflow_ci_env.sh") >= 1
+    assert "python ci/inspect_mlflow_ci_access.py --phase read" in inspect
+    assert "inspect-mlflow-direct:" not in inspect
+    assert "inspect-mlflow-k8s-discovery:" not in inspect
+    assert "inspect-ci-config-presence:" not in inspect
     assert "https://g02-mlflow.mlops.qbootcamp.ir" not in inspect
+
+
+
+def test_mlflow_installer_accepts_cleaned_inspect_layout_without_readding_jobs():
+    from ci.apply_mlflow_k8s_fix import rewrite_inspect, INSPECT_NEW
+
+    cleaned = ("inspect-api-endpoint:\n  stage: inspect\n\n"
+               "inspect-mlflow-ci-access:\n  stage: inspect\n  script:\n"
+               "    - |\n" + INSPECT_NEW + "\n")
+    assert rewrite_inspect(cleaned) == cleaned
+    assert "inspect-mlflow-direct:" not in rewrite_inspect(cleaned)
+
+
+def test_mlflow_installer_rejects_unknown_missing_direct_layout():
+    from ci.apply_mlflow_k8s_fix import rewrite_inspect, INSPECT_NEW
+    # The preflight section is present, but the named MLflow inspection job
+    # is missing: this is NOT the recognized consolidated layout.
+    unknown = "inspect-api-endpoint:\n  stage: inspect\n" + INSPECT_NEW
+    with pytest.raises(ValueError, match="known consolidated"):
+        rewrite_inspect(unknown)
 
 
 def test_patch_installer_idempotent():
