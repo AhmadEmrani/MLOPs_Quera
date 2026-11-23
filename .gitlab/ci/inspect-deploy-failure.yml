@@ -30,29 +30,9 @@ inspect-deploy-failure:
       kubectl -n "$NAMESPACE" get secrets -o custom-columns='NAME:.metadata.name,TYPE:.type' || true
       echo "=== Helm status ==="
       helm -n "$NAMESPACE" status promiseops || true
+      echo "=== Helm Secret quota budget (dry-run) ==="
+      python ci/helm_secret_budget.py --namespace "$NAMESPACE" --dry-run || true
 
-inspect-deploy-rs:
-  needs: []
-  stage: inspect
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
-  allow_failure: true
-  script:
-    - |
-      set -u
-      TEAM_NAME="${TEAM:-g02}"
-      NAMESPACE="${TEAM_NAME}-staging"
-      echo "=== ReplicaSet conditions (including full failure messages) ==="
-      kubectl -n "$NAMESPACE" get rs -l app=promiseops -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{range .status.conditions[*]}{.type}{" status="}{.status}{" reason="}{.reason}{" message="}{.message}{"\n"}{end}{end}' || true
-      kubectl -n "$NAMESPACE" describe rs -l app=promiseops || true
-      kubectl -n "$NAMESPACE" get events || true
-      kubectl auth can-i get serviceaccounts -n "$NAMESPACE" || true
-      kubectl -n "$NAMESPACE" get secret registry-pull -o custom-columns='NAME:.metadata.name,TYPE:.type' || true
-
-# RBAC-aware, read-only inspection of runtime identities. Does not create Pods.
-# If the deploy identity may CREATE Pods, use server-side dry-run admission
-# to verify known candidate service account names. This writes no cluster objects.
 inspect-runtime-serviceaccount:
   needs: []
   stage: inspect

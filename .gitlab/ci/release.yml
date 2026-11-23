@@ -69,13 +69,14 @@ deploy-staging:
       # Keep the configured name; Kubernetes validates it when creating Pods.
       kubectl get secret registry-pull runtime-config -n "$NAMESPACE" -o name >/dev/null
 
+      python ci/helm_secret_budget.py --namespace "$NAMESPACE" --quota-fallback "${PROMISEOPS_SECRET_QUOTA_FALLBACK:-20}"
       helm upgrade --install "$RELEASE_NAME" deploy/chart \
         --namespace "$NAMESPACE" \
         --values deploy/chart/values.staging.yaml \
         --set-string "image.repository=${CI_REGISTRY_IMAGE}/app" \
         --set-string "image.digest=${DIGEST}" \
         --set-string "serviceAccount.name=${RUNTIME_SA}" \
-        --atomic --wait --timeout 8m --history-max 20
+        --atomic --wait --timeout 8m --history-max 5
 
       kubectl rollout status "deployment/${RELEASE_NAME}" -n "$NAMESPACE" --timeout=8m
       mkdir -p deployment-evidence
@@ -325,13 +326,14 @@ deploy-model-staging:
       # Runtime ServiceAccount is staff-managed; CI has no get permission.
       # Keep the configured name; Kubernetes validates it when creating Pods.
       kubectl get secret registry-pull runtime-config -n "$NAMESPACE" -o name >/dev/null
+      python ci/helm_secret_budget.py --namespace "$NAMESPACE" --quota-fallback "${PROMISEOPS_SECRET_QUOTA_FALLBACK:-20}"
       helm upgrade --install promiseops deploy/chart \
         --namespace "$NAMESPACE" \
         --values deploy/chart/values.staging.yaml \
         --set-string "image.repository=${CI_REGISTRY_IMAGE}/app" \
         --set-string "image.digest=${DIGEST}" \
         --set-string "serviceAccount.name=${RUNTIME_SA}" \
-        --atomic --wait --timeout 8m --history-max 20
+        --atomic --wait --timeout 8m --history-max 5
       kubectl rollout status deployment/promiseops -n "$NAMESPACE" --timeout=8m
       mkdir -p deployment-evidence
       echo "environment=staging namespace=${NAMESPACE} image=${CI_REGISTRY_IMAGE}/app@${DIGEST}" \

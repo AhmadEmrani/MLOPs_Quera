@@ -1,16 +1,4 @@
-inspect-own-namespaces:
-  needs: []
-  stage: inspect
-  rules:
-    - if: '$CI_COMMIT_BRANCH == "main"'
-      when: manual
-  allow_failure: true
-  script:
-    - for area in staging prod; do kubectl get pods,deployments,jobs -n "$TEAM-$area"; done
-    - kubectl get pods,jobs -n "$TEAM-jobs"
 
-# Read-only discovery for using the deployed API. Prints cluster resource
-# metadata and ingress hosts only; it never reads Secret data or pod env values.
 
 inspect-api-endpoint:
   stage: inspect
@@ -215,6 +203,9 @@ inspect-prod-resources:
       kubectl get pods -n "$NAMESPACE" -o wide || true
 
       echo ""
+      echo "=== Helm Secret quota budget (dry-run) ==="
+      python ci/helm_secret_budget.py --namespace "$NAMESPACE" --dry-run || true
+
       echo "Inspection completed. No resources changed."
 
       echo "=== HPA DETAILS AND SCALE HISTORY ==="

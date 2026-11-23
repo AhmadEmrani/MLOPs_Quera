@@ -54,6 +54,7 @@ if kubectl get cronjob "$CRONJOB" -n "$NAMESPACE" >/dev/null 2>&1; then
 fi
 sh ci/wait_for_scoring_idle.sh "$NAMESPACE"
 
+python ci/helm_secret_budget.py --namespace "$NAMESPACE" --quota-fallback "${PROMISEOPS_SECRET_QUOTA_FALLBACK:-20}"
 helm upgrade --install "$RELEASE_NAME" "$CHART" \
   --namespace "$NAMESPACE" \
   --values "$VALUES" \
@@ -61,7 +62,7 @@ helm upgrade --install "$RELEASE_NAME" "$CHART" \
   --set-string "image.digest=${DIGEST}" \
   --set-string "serviceAccount.name=${RUNTIME_SA}" \
   --set batchJob.suspend=true \
-  --atomic --wait --timeout 8m --history-max 20
+  --atomic --wait --timeout 8m --history-max 5
 
 kubectl rollout status "deployment/${RELEASE_NAME}" -n "$NAMESPACE" --timeout=8m
 ATTEMPT=0
@@ -78,6 +79,7 @@ done
 
 # Persist the normal unsuspended schedule as the current Helm revision. This
 # changes only the CronJob and does not roll API Pods or consume surge capacity.
+python ci/helm_secret_budget.py --namespace "$NAMESPACE" --quota-fallback "${PROMISEOPS_SECRET_QUOTA_FALLBACK:-20}"
 helm upgrade "$RELEASE_NAME" "$CHART" \
   --namespace "$NAMESPACE" \
   --values "$VALUES" \
@@ -85,7 +87,7 @@ helm upgrade "$RELEASE_NAME" "$CHART" \
   --set-string "image.digest=${DIGEST}" \
   --set-string "serviceAccount.name=${RUNTIME_SA}" \
   --set batchJob.suspend=false \
-  --atomic --wait --timeout 8m --history-max 20
+  --atomic --wait --timeout 8m --history-max 5
 HELD_CRONJOB=0
 trap - EXIT
 trap - HUP INT TERM
