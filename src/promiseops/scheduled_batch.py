@@ -103,6 +103,7 @@ def run_scheduled_batch() -> dict:
 
                 as_of = min(since + step, last_available)
                 batch_id = "score-" + as_of.strftime("%Y%m%dT%H%M%SZ")
+                monitoring_rows: list[dict] = []
                 result = score_batch(
                     conn,
                     model,
@@ -110,9 +111,30 @@ def run_scheduled_batch() -> dict:
                     as_of=as_of,
                     since=since,
                     batch_id=batch_id,
+                    monitoring_rows=monitoring_rows,
                 )
+                if len(monitoring_rows) != int(result["scored_count"]):
+                    raise ValueError("Monitoring cohort count does not match scored_count")
                 encoded = json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                 with conn.cursor() as cur:
+                    # One transaction for *all* probabilities and cursor advance.
+                    # Explicit migration 004 must exist before running this CronJob.
+                    cur.executemany(
+                        """
+                        INSERT INTO monitoring_predictions (
+                            batch_id, order_id, model_version, risk_probability,
+                            scored_as_of, feature_contract_sha256, feature_hash, features_jsonb
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                        ON CONFLICT (batch_id, order_id, model_version) DO NOTHING
+                        """,
+                        [(
+                            row["batch_id"], row["order_id"], row["model_version"],
+                            row["risk_probability"], row["scored_as_of"],
+                            row["feature_contract_sha256"], row["feature_hash"],
+                            json.dumps(row["features"], sort_keys=True,
+                                       ensure_ascii=False, allow_nan=False),
+                        ) for row in monitoring_rows],
+                    )
                     cur.execute(
                         """
                         INSERT INTO promiseops_scoring_runs(batch_id, since_at, as_of, result)

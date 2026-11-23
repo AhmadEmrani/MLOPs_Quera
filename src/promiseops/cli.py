@@ -67,7 +67,8 @@ def _model_version(release: dict) -> str:
 
 
 def score_batch(
-    conn: Any, model: Any, release: dict, *, as_of: datetime, since: datetime, batch_id: str
+    conn: Any, model: Any, release: dict, *, as_of: datetime, since: datetime, batch_id: str,
+    monitoring_rows: list[dict] | None = None,
 ) -> dict:
     version = _model_version(release)
     ids = _cohort_ids(conn, since, as_of)
@@ -96,11 +97,24 @@ def score_batch(
         if frame.empty:
             continue
         probs = model.predict_proba(frame.loc[:, list(FEATURE_COLUMNS)])
-        for order_id, row in zip(frame["order_id"], probs, strict=True):
+        for offset, (order_id, row) in enumerate(zip(frame["order_id"], probs, strict=True)):
             prob = float(row[column])
             if not math.isfinite(prob) or not 0.0 <= prob <= 1.0:
                 raise ValueError("probability out of range")
             scored.append((str(order_id), prob))
+            if monitoring_rows is not None:
+                from promiseops.feature_lineage import observation
+                snapshot = observation(frame.iloc[[offset]], feature_as_of=as_of, release=release)
+                monitoring_rows.append({
+                    "batch_id": batch_id,
+                    "order_id": str(order_id),
+                    "model_version": version,
+                    "risk_probability": prob,
+                    "scored_as_of": as_of,
+                    "feature_contract_sha256": snapshot["feature_contract_sha256"],
+                    "feature_hash": snapshot["feature_hash"],
+                    "features": snapshot["features"],
+                })
     if len(scored) != len(ids):
         raise ValueError("features missing for part of the cohort")
     scored.sort(key=lambda item: (-item[1], item[0]))
