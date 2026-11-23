@@ -47,3 +47,9 @@ print(
     "\nNOTE: This checks GitLab CI, "
     "NOT the Airflow task environment."
 )
+
+print(
+    "\nMLflow note: this displays raw GitLab CI env only. The approved "
+    "Kubernetes runtime-config fallback is loaded by "
+    "ci/require_mlflow_ci_env.sh in MLflow jobs."
+)

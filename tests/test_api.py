@@ -58,9 +58,12 @@ def env(monkeypatch):
     def fake_init(_conn):
         calls["init"] += 1
 
-    def fake_features(_conn, order_ids, *, as_of, labeled=False):
+    def fake_features(_conn, order_ids, *, as_of, labeled=False, ensure_schema=True):
         ids = [o for o in order_ids if o in known]
         row = {name: 1 for name in FEATURE_COLUMNS}
+        row["customer_state"] = "SP"
+        row["primary_seller_state"] = "SP"
+        row["primary_payment_type"] = "credit_card"
         row["primary_category"] = None
         return pd.DataFrame([{"order_id": o, **row} for o in ids])
 
@@ -72,6 +75,9 @@ def env(monkeypatch):
             return saved
         calls["compute"] += 1
         result = compute_fn()
+        # Real get_or_save_prediction persists this private metadata, then
+        # returns only the public response fields.
+        result.pop("_feature_observation", None)
         store[request_id] = {"order_id": order_id, "request_id": request_id, **result}
         return store[request_id]
 

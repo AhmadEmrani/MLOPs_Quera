@@ -11,13 +11,17 @@ from datetime import UTC, datetime
 from promiseops.api.errors import OrderNotFoundError
 from promiseops.api.state import AppState
 from promiseops.data import FEATURE_COLUMNS, build_features, get_or_save_prediction
+from promiseops.feature_lineage import observation
 
 logger = logging.getLogger("promiseops.api")
 
 
 def score(state: AppState, conn, order_id: str) -> dict:
     model, release = state.model, state.release
-    frame = build_features(conn, [order_id], as_of=datetime.now(UTC))
+    # Preserve the same point-in-time cutoff for extraction and evidence.
+    # AppState.startup already initializes schema: never run DDL per request.
+    feature_as_of = datetime.now(UTC)
+    frame = build_features(conn, [order_id], as_of=feature_as_of, ensure_schema=False)
     if frame.empty:
         raise OrderNotFoundError(order_id)
     features = frame.loc[:, list(FEATURE_COLUMNS)]
@@ -43,6 +47,9 @@ def score(state: AppState, conn, order_id: str) -> dict:
     return {
         "risk_probability": probability,
         "model_version": str(release["model_version"]),
+        "_feature_observation": observation(
+            features, feature_as_of=feature_as_of, release=release
+        ),
     }
 
 
