@@ -1,33 +1,21 @@
-# PromiseOps stages 3 & 4: Golden + Temporal + Transaction Refactoring
+# PromiseOps — MLflow CI Read-Only Inspection
 
-**Target:** `refactor/codesAndLifeCycle` (GitHub/GitLab). This is a source patch
-prepared against the checked GitHub branch. It has not been applied to the
-remote branch or deployed to Production.
+For branch `refactor/codesAndLifeCycle` (verified existing `.gitlab/ci/inspect.yml` layout).
 
-**Installation from repository root:**
+The existing `inspect-ci-config-presence` already reports whether `MLFLOW_TRACKING_URI` is visible. Use that first; no code change is needed to run it on `main`.
+
+This patch adds `inspect-mlflow-ci-access`, a separate manual GitLab `inspect` stage job. It diagnoses variable visibility, protected ref, DNS/direct TCP and read-only MLflow API access, without exposing the URI or credentials or changing the registry.
+
+Apply at repository root:
 
 ```bash
-unzip -o ~/Downloads/promiseops-golden-temporal-transactions.zip -d .
-python ci/apply_golden_temporal_refactor.py --check
-python ci/apply_golden_temporal_refactor.py
-python ci/install_golden_ci.py
-PYTHONPATH=src python -m pytest -q -rs \
-  tests/test_golden_contract.py tests/test_temporal_safety.py \
-  tests/test_feature_query_refactor.py tests/test_feature_persistence.py \
-  tests/test_transaction_regression.py tests/test_golden_mlflow_report.py \
-  tests/test_golden_model_predictions.py
-PYTHONPATH=src python -m pytest -q -rs
+unzip -o promiseops-mlflow-inspect-job.zip -d .
+python ci/install_mlflow_ci_inspect.py --check
+python ci/install_mlflow_ci_inspect.py
+python -m pytest -q tests/test_mlflow_ci_inspect.py
 git diff --check
-git status --short
 ```
 
-**Important:** This ZIP includes an installer for the 3 edited existing files.
-Files `src/promiseops/data.py`, `src/promiseops/model.py`, and
-`tests/test_feature_persistence.py` are not overwritten directly. If source
-anchors differ, the installer fails closed, rather than replacing your work.
+After pushing/merging to `main`, manually run `inspect-mlflow-ci-access` and review `reports/mlflow/ci-access.json` in the job's artifacts. The check does not replace the `golden-mlflow-evidence` job, which is the actual MLflow write test.
 
-Manual migration (separate approved DB action) is in
-`db/migrations/003_outcome_batch_available_at.sql`. Do **NOT** apply it to
-production until your planned final integration stage. See
-`docs/GOLDEN_TEMPORAL_TRANSACTION_REFACTOR.md` for design, limitations and
-end-to-end test procedure.
+**Security:** This ZIP contains no endpoint, secret or credential. The installer is idempotent, modifies only `.gitlab/ci/inspect.yml`, and refuses unrecognized file layouts.

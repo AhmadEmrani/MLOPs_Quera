@@ -17,7 +17,7 @@ prepare-model-release:
       uv venv --python /usr/local/bin/python .release-venv
       uv pip sync --python .release-venv/bin/python --no-index \
         --find-links tracking-wheelhouse --require-hashes requirements-tracking.lock
-      : "${MLFLOW_TRACKING_URI:?Set protected MLFLOW_TRACKING_URI for model release review}"
+      . ci/require_mlflow_ci_env.sh
       .release-venv/bin/python ci/prepare_model_release.py --destination dist/model-release
       set -a
       . dist/model-release/release.env
@@ -210,6 +210,7 @@ rollback-production:
       PYROLLBACK
       mkdir -p deployment-evidence
       if [ -n "${ROLLBACK_MLFLOW_VERSION:-}" ]; then
+        . ci/require_mlflow_ci_env.sh
         sh ci/setup_registry_env.sh
         .registry-venv/bin/python ci/model_registry_lifecycle.py check-approved \
           --version "$ROLLBACK_MLFLOW_VERSION" \
@@ -378,7 +379,7 @@ promote-model-production:
       set -a
       . dist/model-release/release.env
       set +a
-      : "${MLFLOW_TRACKING_URI:?Protected MLFLOW_TRACKING_URI is required}"
+      . ci/require_mlflow_ci_env.sh
       sh ci/setup_registry_env.sh
       mkdir -p deployment-evidence
       .registry-venv/bin/python ci/model_registry_lifecycle.py preflight \
@@ -438,6 +439,7 @@ reconcile-champion-production:
       case "$TEAM_NAME" in g0[1-7]) ;; *) echo 'Invalid team' >&2; exit 1 ;; esac
       NAMESPACE="${TEAM_NAME}-prod"
       mkdir -p deployment-evidence
+      . ci/require_mlflow_ci_env.sh
       sh ci/setup_registry_env.sh
       .registry-venv/bin/python ci/model_registry_lifecycle.py check-approved \
         --version "$REGISTRY_MODEL_VERSION" \

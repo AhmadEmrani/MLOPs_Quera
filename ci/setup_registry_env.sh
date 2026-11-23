@@ -2,7 +2,7 @@
 # Offline, no unverified dependency downloads and no credential prints.
 set -eu
 set +x
-: "${MLFLOW_TRACKING_URI:?The protected MLflow URI is required for champion lifecycle}"
+. ci/require_mlflow_ci_env.sh
 test -d /opt/promiseops/tracking-wheelhouse || {
   echo 'Missing authorized tracking-wheelhouse in CI toolbox.' >&2
   exit 1

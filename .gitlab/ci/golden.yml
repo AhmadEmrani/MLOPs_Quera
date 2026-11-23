@@ -31,7 +31,7 @@ golden-mlflow-evidence:
   allow_failure: true
   script:
     - set -eu
-    - 'test -n "${MLFLOW_TRACKING_URI:-}" || { echo "Missing protected MLFLOW_TRACKING_URI"; exit 1; }'
+    - . ci/require_mlflow_ci_env.sh
     - cp -a /opt/promiseops/tracking-wheelhouse ./tracking-wheelhouse
     - uv venv --python /usr/local/bin/python .golden-mlflow-venv
     - uv pip sync --python .golden-mlflow-venv/bin/python --no-index --find-links tracking-wheelhouse --require-hashes requirements-tracking.lock

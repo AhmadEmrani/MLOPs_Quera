@@ -236,3 +236,68 @@ inspect-prod-resources:
       kubectl get events -n "$NAMESPACE" \
         --field-selector involvedObject.kind=HorizontalPodAutoscaler,involvedObject.name=promiseops \
         --sort-by=.lastTimestamp || true
+
+# Read-only GitLab Runner diagnostic; does not access Production or mutate MLflow.
+inspect-mlflow-ci-access:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -eu
+      set +x
+      mkdir -p reports/mlflow
+      python ci/inspect_mlflow_ci_access.py --phase preflight --report reports/mlflow/ci-access.json
+      test -d /opt/promiseops/tracking-wheelhouse
+      cp -a /opt/promiseops/tracking-wheelhouse ./tracking-wheelhouse
+      uv venv --python /usr/local/bin/python .mlflow-inspect-venv
+      uv pip sync --python .mlflow-inspect-venv/bin/python --no-index --find-links tracking-wheelhouse --require-hashes requirements-tracking.lock
+      .mlflow-inspect-venv/bin/python ci/inspect_mlflow_ci_access.py --phase read --report reports/mlflow/ci-access.json
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - reports/mlflow/ci-access.json
+
+inspect-mlflow-direct:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      python - <<'PY'
+      import json
+      from urllib.request import urlopen
+      from urllib.error import HTTPError
+
+      url = (
+          "https://g02-mlflow.mlops.qbootcamp.ir"
+          "/api/2.0/mlflow/experiments/get?experiment_id=2"
+      )
+
+      try:
+          with urlopen(url, timeout=10) as response:
+              payload = json.load(response)
+              experiment = payload.get("experiment", {})
+              if str(experiment.get("experiment_id")) != "2":
+                  raise ValueError("Unexpected API response")
+
+          print("MLFLOW_READ_API: PASSED")
+
+      except HTTPError as error:
+          print(f"MLFLOW_READ_API: HTTP {error.code}")
+          raise SystemExit(1)
+
+      except Exception as error:
+          print(
+              "MLFLOW_READ_API: FAILED "
+              + type(error).__name__
+          )
+          raise SystemExit(1)
+      PY
