@@ -301,3 +301,43 @@ inspect-mlflow-direct:
           )
           raise SystemExit(1)
       PY
+
+inspect-mlflow-k8s-discovery:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -eu
+
+      for ns in g02-ci g02-platform g02-staging g02-prod g02-jobs; do
+        echo "=== Namespace: $ns ==="
+
+        if kubectl auth can-i list services -n "$ns" --quiet; then
+          kubectl get services -n "$ns" \
+            -o custom-columns='NAME:.metadata.name,TYPE:.spec.type' \
+            || true
+        else
+          echo "Services: permission unavailable"
+        fi
+
+        if kubectl auth can-i list ingress -n "$ns" --quiet; then
+          kubectl get ingress -n "$ns" \
+            -o custom-columns='NAME:.metadata.name,CLASS:.spec.ingressClassName' \
+            || true
+        else
+          echo "Ingress: permission unavailable"
+        fi
+      done
+
+      echo "=== Production runtime-config key names ==="
+      if kubectl auth can-i get secret/runtime-config \
+          -n g02-prod --quiet; then
+        kubectl get secret runtime-config -n g02-prod \
+          -o go-template='{{range $key, $_ := .data}}{{$key}}{{"\n"}}{{end}}'
+      else
+        echo "Secret metadata: permission unavailable"
+      fi
