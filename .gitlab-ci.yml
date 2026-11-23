@@ -33,11 +33,14 @@ default:
     - mkdir -p "$HOME"
 
 include:
+  - local: "/.gitlab/ci/golden.yml"
   - local: "/.gitlab/ci/test.yml"
   - local: "/.gitlab/ci/helm.yml"
   - local: "/.gitlab/ci/staging-check.yml"
   - local: "/.gitlab/ci/build.yml"
   - local: "/.gitlab/ci/airflow.yml"
   - local: "/.gitlab/ci/inspect.yml"
+  - local: "/.gitlab/ci/feature-lineage.yml"
   - local: "/.gitlab/ci/release.yml"
   - local: "/.gitlab/ci/inspect-deploy-failure.yml"
+  - local: "/.gitlab/ci/load.yml"

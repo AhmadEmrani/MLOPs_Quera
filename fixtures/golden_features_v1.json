@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "fixture_source": "fixtures/synthetic-orders.json + fixtures/synthetic-outcomes.json",
+  "order_batch_available_at": "2017-04-15T00:00:00Z",
+  "outcome_batch_available_at": "2017-05-01T00:00:00Z",
+  "feature_cutoff": "2017-04-16T00:00:00Z",
+  "label_cutoff": "2017-05-02T00:00:00Z",
+  "cases": [
+    {
+      "case_id": "olist-synthetic-0",
+      "order_id": "o000000",
+      "features": {
+        "item_count": 1.0,
+        "seller_count": 1.0,
+        "total_price": 138.0,
+        "total_freight": 15.0,
+        "total_weight_g": 700.0,
+        "payment_total": 153.0,
+        "max_installments": 2.0,
+        "promise_days": 8.0,
+        "approval_hour": 14.0,
+        "approval_weekday": 6.0,
+        "interstate_fraction": 1.0,
+        "customer_state": "RJ",
+        "primary_seller_state": "SP",
+        "primary_category": "household",
+        "primary_payment_type": "credit_card"
+      },
+      "feature_hash": "72e54467999f613863dc020c6342a18bb70f3a4cc974b2eaa998093a8dad68a2",
+      "late": 1
+    },
+    {
+      "case_id": "olist-synthetic-1",
+      "order_id": "o000001",
+      "features": {
+        "item_count": 1.0,
+        "seller_count": 1.0,
+        "total_price": 56.0,
+        "total_freight": 15.0,
+        "total_weight_g": 700.0,
+        "payment_total": 71.0,
+        "max_installments": 2.0,
+        "promise_days": 8.0,
+        "approval_hour": 12.0,
+        "approval_weekday": 0.0,
+        "interstate_fraction": 0.0,
+        "customer_state": "SP",
+        "primary_seller_state": "SP",
+        "primary_category": "household",
+        "primary_payment_type": "credit_card"
+      },
+      "feature_hash": "bf5353e466f8e452836de778871a73d62db07dc555aa636ab7b4dacc23518467",
+      "late": 0
+    }
+  ]
+}

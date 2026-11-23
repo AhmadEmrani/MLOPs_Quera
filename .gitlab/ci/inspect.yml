@@ -224,3 +224,93 @@ inspect-prod-resources:
 
       echo ""
       echo "Inspection completed. No resources changed."
+
+      echo "=== HPA DETAILS AND SCALE HISTORY ==="
+      kubectl describe hpa promiseops -n "$NAMESPACE" || true
+
+      echo "=== LAST SCALE TIME ==="
+      kubectl get hpa promiseops -n "$NAMESPACE" \
+        -o jsonpath='{.status.lastScaleTime}{"\n"}' || true
+
+      echo "=== HPA EVENTS ==="
+      kubectl get events -n "$NAMESPACE" \
+        --field-selector involvedObject.kind=HorizontalPodAutoscaler,involvedObject.name=promiseops \
+        --sort-by=.lastTimestamp || true
+
+# Read-only GitLab Runner diagnostic; does not access Production or mutate MLflow.
+inspect-mlflow-ci-access:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -eu
+      set +x
+      mkdir -p reports/mlflow
+      . ci/require_mlflow_ci_env.sh
+      python ci/inspect_mlflow_ci_access.py --phase preflight --report reports/mlflow/ci-access.json
+      test -d /opt/promiseops/tracking-wheelhouse
+      cp -a /opt/promiseops/tracking-wheelhouse ./tracking-wheelhouse
+      uv venv --python /usr/local/bin/python .mlflow-inspect-venv
+      uv pip sync --python .mlflow-inspect-venv/bin/python --no-index --find-links tracking-wheelhouse --require-hashes requirements-tracking.lock
+      .mlflow-inspect-venv/bin/python ci/inspect_mlflow_ci_access.py --phase read --report reports/mlflow/ci-access.json
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - reports/mlflow/ci-access.json
+
+inspect-mlflow-direct:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - set -eu
+    - . ci/require_mlflow_ci_env.sh
+    - python ci/check_mlflow_http.py
+
+inspect-mlflow-k8s-discovery:
+  stage: inspect
+  needs: []
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+  script:
+    - |
+      set -eu
+
+      for ns in g02-ci g02-platform g02-staging g02-prod g02-jobs; do
+        echo "=== Namespace: $ns ==="
+
+        if kubectl auth can-i list services -n "$ns" --quiet; then
+          kubectl get services -n "$ns" \
+            -o custom-columns='NAME:.metadata.name,TYPE:.spec.type' \
+            || true
+        else
+          echo "Services: permission unavailable"
+        fi
+
+        if kubectl auth can-i list ingress -n "$ns" --quiet; then
+          kubectl get ingress -n "$ns" \
+            -o custom-columns='NAME:.metadata.name,CLASS:.spec.ingressClassName' \
+            || true
+        else
+          echo "Ingress: permission unavailable"
+        fi
+      done
+
+      echo "=== Production runtime-config key names ==="
+      if kubectl auth can-i get secret/runtime-config \
+          -n g02-prod --quiet; then
+        kubectl get secret runtime-config -n g02-prod \
+          -o go-template='{{range $key, $_ := .data}}{{$key}}{{"\n"}}{{end}}'
+      else
+        echo "Secret metadata: permission unavailable"
+      fi

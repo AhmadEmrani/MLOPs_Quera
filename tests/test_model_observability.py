@@ -78,13 +78,18 @@ class FakeModel:
 def test_prediction_metrics_are_fresh_computations_not_cached_replies(monkeypatch):
     metrics = Metrics()
     row = {name: 1 for name in FEATURE_COLUMNS}
+    row["customer_state"] = "SP"
+    row["primary_seller_state"] = "SP"
+    row["primary_payment_type"] = "credit_card"
     row["primary_category"] = None
     monkeypatch.setattr(services, "build_features", lambda *a, **k: pd.DataFrame([row]))
     store = {}
 
     def save(_conn, *, request_id, order_id, compute_fn):
         if request_id not in store:
-            store[request_id] = {"order_id": order_id, "request_id": request_id, **compute_fn()}
+            result = compute_fn()
+            result.pop("_feature_observation", None)
+            store[request_id] = {"order_id": order_id, "request_id": request_id, **result}
         return store[request_id]
 
     monkeypatch.setattr(services, "get_or_save_prediction", save)
